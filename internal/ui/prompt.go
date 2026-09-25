@@ -17,6 +17,7 @@ import (
 // Duration choices, shown as one row of buttons. The labels are friendlier
 // than the wire values the daemon parses.
 var durationOptions = []segmentOption{
+	{"Once", daemon.DurationOnce},
 	{"30 sec", daemon.Duration30s},
 	{"5 min", daemon.Duration5m},
 	{"1 hour", daemon.Duration1h},
@@ -48,7 +49,9 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	win.Resize(fyne.NewSize(620, 420))
 	win.CenterOnScreen()
 
-	dur := newSegmented(durationOptions, a.defaultDuration, nil)
+	// "Once" starts selected: the least committal choice, and the one a
+	// timeout would apply anyway.
+	dur := newSegmented(durationOptions, FallbackDuration, nil)
 
 	// Scope toggles name the value they pin the rule to, so what each one
 	// does is readable without looking anywhere else.
@@ -108,11 +111,15 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	// Focus nothing, so no widget can receive a key press in the first place.
 	win.Canvas().Unfocus()
 
-	countdown := widget.NewLabel("")
-	countdown.Alignment = fyne.TextAlignCenter
+	// The countdown rides on whichever button the timeout would press, as the
+	// Python UI does, so the default action is visible where it will land
+	// rather than in a separate line of text.
 	deadline := time.Now().Add(a.promptTimeout)
+	defaultAction := a.defaultAction
 	setCountdown := func() {
-		countdown.SetText(countdownText(time.Until(deadline), a.defaultAction, a.defaultDuration))
+		secs := secondsLeft(time.Until(deadline))
+		allow.SetText(buttonText("Allow", daemon.ActionAllow, defaultAction, secs))
+		deny.SetText(buttonText("Deny", daemon.ActionDeny, defaultAction, secs))
 	}
 	setCountdown()
 
@@ -130,7 +137,6 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 
 		widget.NewSeparator(),
 		container.NewGridWithColumns(2, deny, allow),
-		countdown,
 	))
 
 	win.Show()
@@ -155,19 +161,22 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	}()
 }
 
-// countdownText says what will happen and when, rather than just showing a
-// number: the deadline only matters because it applies the default.
-//
-// It names the duration as well as the action, because a timeout ignores the
-// duration buttons entirely and falls back to -default-duration. Without that,
-// a selected "30 sec" button implies a timeout would use it.
-func countdownText(left time.Duration, defaultAction, defaultDuration string) string {
+// secondsLeft rounds up, so the last visible tick is "1" rather than "0".
+func secondsLeft(left time.Duration) int {
 	if left < 0 {
-		left = 0
+		return 0
 	}
-	// Round up, so the last visible second is "1s" rather than "0s".
-	secs := int((left + time.Second - 1) / time.Second)
-	return fmt.Sprintf("No answer in %ds → %s / %s (default)", secs, defaultAction, defaultDuration)
+	return int((left + time.Second - 1) / time.Second)
+}
+
+// buttonText appends the countdown to the button the timeout would press,
+// matching the Python UI's "Allow (12)". The other button keeps its plain
+// label, so which one is the default is unambiguous.
+func buttonText(label, action, defaultAction string, secs int) string {
+	if action != defaultAction {
+		return label
+	}
+	return fmt.Sprintf("%s (%d)", label, secs)
 }
 
 // promptKeyHandler makes the keys that could activate a focused button inert.

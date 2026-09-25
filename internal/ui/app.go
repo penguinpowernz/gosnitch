@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -13,14 +14,21 @@ import (
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
 )
 
+// PromptTimeout is how long a prompt waits before applying the default. Fixed
+// rather than configurable: it is the window in which an unattended machine
+// decides for itself, so it should not drift.
+const PromptTimeout = 30 * time.Second
+
+// FallbackDuration is the duration applied when a prompt is not answered.
+// Always "once", so a timeout can never create a lasting rule.
+const FallbackDuration = daemon.DurationOnce
+
 // Options configure the UI at startup.
 type Options struct {
-	RulesPath       string
-	DefaultAction   string
-	DefaultDuration string
-	PromptTimeout   time.Duration
-	Interactive     bool // false: never prompt, just record and apply the default
-	StartHidden     bool
+	RulesPath     string
+	DefaultAction string
+	Interactive   bool // false: never prompt, just record and apply the default
+	StartHidden   bool
 }
 
 // App wires the tray, the table window and the prompt together.
@@ -34,21 +42,14 @@ type App struct {
 	store     *daemon.Store
 	ruleStore *daemon.RuleStore
 
-	defaultAction   string
-	defaultDuration string
-	promptTimeout   time.Duration
-	interactive     bool
+	defaultAction string
+	promptTimeout time.Duration
+	interactive   bool
 
 	shown bool
 }
 
 func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
-	if opts.PromptTimeout <= 0 {
-		opts.PromptTimeout = 15 * time.Second
-	}
-	if opts.DefaultDuration == "" {
-		opts.DefaultDuration = daemon.DurationOnce
-	}
 	if opts.DefaultAction == "" {
 		opts.DefaultAction = daemon.ActionAllow
 	}
@@ -56,14 +57,20 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 	fa := app.NewWithID("nz.co.penguinpower.gosnitch")
 
 	a := &App{
-		fyne:            fa,
-		store:           store,
-		srv:             srv,
-		defaultAction:   opts.DefaultAction,
-		defaultDuration: opts.DefaultDuration,
-		promptTimeout:   opts.PromptTimeout,
-		interactive:     opts.Interactive,
+		fyne:          fa,
+		store:         store,
+		srv:           srv,
+		promptTimeout: PromptTimeout,
+		interactive:   opts.Interactive,
 	}
+
+	// A default chosen from the tray outlives the session; the flag only
+	// seeds it the first time gosnitch runs.
+	a.defaultAction = fa.Preferences().StringWithFallback(prefDefaultAction, opts.DefaultAction)
+	if !validAction(a.defaultAction) {
+		a.defaultAction = opts.DefaultAction
+	}
+	srv.SetDefaults(a.defaultAction, FallbackDuration)
 
 	a.ruleStore = daemon.NewRuleStore(opts.RulesPath)
 	a.table = newTableView(store)
@@ -112,6 +119,38 @@ func (a *App) buildWindow(startHidden bool) {
 	}
 }
 
+// titleCase uppercases the first letter, for menu labels built from the
+// lowercase wire values.
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// prefDefaultAction is the preferences key the tray choice persists under.
+const prefDefaultAction = "default_action"
+
+func validAction(a string) bool {
+	switch a {
+	case daemon.ActionAllow, daemon.ActionDeny, daemon.ActionReject:
+		return true
+	}
+	return false
+}
+
+// setDefaultAction records the choice, tells the server, and rebuilds the tray
+// so the tick moves to the new item.
+func (a *App) setDefaultAction(action string) {
+	if !validAction(action) {
+		return
+	}
+	a.defaultAction = action
+	a.fyne.Preferences().SetString(prefDefaultAction, action)
+	a.srv.SetDefaults(action, FallbackDuration)
+	a.buildTray()
+}
+
 func (a *App) buildTray() {
 	desk, ok := a.fyne.(desktop.App)
 	if !ok {
@@ -120,9 +159,24 @@ func (a *App) buildTray() {
 		return
 	}
 
+	// Only the default action is configurable. The duration a timeout applies
+	// is always "once" and the timeout itself is fixed, so neither can be set
+	// to something that would quietly create lasting rules unattended.
+	actionItems := make([]*fyne.MenuItem, 0, 3)
+	for _, act := range []string{daemon.ActionAllow, daemon.ActionDeny, daemon.ActionReject} {
+		act := act
+		item := fyne.NewMenuItem(titleCase(act), func() { a.setDefaultAction(act) })
+		item.Checked = a.defaultAction == act
+		actionItems = append(actionItems, item)
+	}
+	defaults := fyne.NewMenuItem("Default action", nil)
+	defaults.ChildMenu = fyne.NewMenu("", actionItems...)
+
 	menu := fyne.NewMenu("gosnitch",
 		fyne.NewMenuItem("Show events", func() { a.showTab(0) }),
 		fyne.NewMenuItem("Manage rules", func() { a.showTab(1) }),
+		fyne.NewMenuItemSeparator(),
+		defaults,
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() { a.fyne.Quit() }),
 	)

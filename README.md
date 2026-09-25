@@ -49,9 +49,7 @@ The daemon reconnects on its own within a few seconds.
 | `-address` | `unix:///tmp/osui.sock` | Where to listen. Must match the daemon's `Server.Address`. |
 | `-rules` | `/etc/opensnitchd/rules` | Directory the daemon keeps rules in. Read-only to gosnitch. |
 | `-interactive` | `true` | Prompt on unmatched connections. `false` records silently and applies the default. |
-| `-default-action` | `allow` | `allow`, `deny` or `reject`. Used when not prompting, or when a prompt times out. |
-| `-default-duration` | `once` | Preselected duration: `30s`, `5m`, `1h`, `until restart` or `always`. |
-| `-timeout` | `15s` | How long a prompt waits before applying the default. |
+| `-default-action` | `allow` | `allow`, `deny` or `reject` when a prompt goes unanswered. Only seeds the initial value; change it from the tray afterwards. |
 | `-hidden` | `false` | Start minimised to the tray. |
 
 `GOSNITCH_ADDRESS` overrides the default address.
@@ -67,7 +65,9 @@ empties it.
 Select one and press **Delete rule**; gosnitch confirms first, because
 deletion cannot be undone.
 
-- **Tray icon** → *Show events*, *Manage rules*, *Quit*.
+- **Tray icon** → *Show events*, *Manage rules*, *Default action*, *Quit*.
+- **Default action** picks what an unanswered prompt does. The choice is
+  remembered across restarts, and the countdown moves to that button.
 - Closing the window **hides** it to the tray rather than quitting.
 
 ### The prompt
@@ -82,14 +82,13 @@ So every control is a full-size button:
   firefox wants to connect to www.mozilla.org
 
   For how long
-  [ 30 sec ][ 5 min ][ 1 hour ][ Until reboot ][ Forever ]
+  [ Once ][ 30 sec ][ 5 min ][ 1 hour ][ Until reboot ][ Forever ]
 
   Apply to
   Always limited to firefox. Narrow it further:
   [ ✓ www.mozilla.org ][   port 443 ][   user 1000 ]
 
-  [      Deny      ][      Allow      ]
-       No answer in 12s → allow (default)
+  [      Deny      ][    Allow (12)   ]
 ```
 
 - **Duration** is a single-select row: clicking one deselects the rest.
@@ -106,9 +105,17 @@ inert, and the window focuses no widget, so only a deliberate click answers.
 Escape dismisses the prompt, which applies the default action rather than
 creating a rule.
 
-A countdown at the foot of the window shows how long is left and which action
-will be applied if you do not answer, so the deadline is never a surprise. It
-is set by `-timeout`.
+The countdown rides on the button the timeout would press - `Allow (12)` - so
+the default is visible exactly where it will land, and the other button stays
+plain. Change which one that is from the tray.
+
+Two things are deliberately **not** configurable:
+
+- The prompt **timeout is fixed at 30 seconds**. It is the window in which an
+  unattended machine decides for itself, so it should not drift.
+- An unanswered prompt always applies the default action **for `once` only**,
+  whatever the duration buttons show. A timeout can never create a lasting
+  rule.
 
 ### How deleting works
 

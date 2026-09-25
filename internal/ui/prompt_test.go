@@ -23,6 +23,7 @@ func TestMain(m *testing.M) {
 // friendlier labels shown on them.
 func TestDurationOptionsUseWireValues(t *testing.T) {
 	want := map[string]string{
+		"Once":         "once",
 		"30 sec":       "30s",
 		"5 min":        "5m",
 		"1 hour":       "1h",
@@ -46,12 +47,11 @@ func TestDurationOptionsUseWireValues(t *testing.T) {
 
 func TestSegmentedSelectsOneAtATime(t *testing.T) {
 	s := newSegmented(durationOptions, daemon.DurationOnce, nil)
-	// "once" is not offered, so it should fall back to the first option.
-	if s.Value() != daemon.Duration30s {
-		t.Fatalf("default = %q, want the first option", s.Value())
+	if s.Value() != daemon.DurationOnce {
+		t.Fatalf("default = %q, want once", s.Value())
 	}
 
-	s.selectIndex(4) // Forever
+	s.selectIndex(len(durationOptions) - 1) // Forever
 	if s.Value() != daemon.DurationAlways {
 		t.Fatalf("value = %q, want always", s.Value())
 	}
@@ -138,30 +138,51 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// The countdown must say what will happen, not just tick, and must never show
-// a negative or confusing value as it lands on zero.
-func TestCountdownText(t *testing.T) {
+// The countdown rides on the button the timeout would press, matching the
+// Python UI's "Allow (12)", and the other button stays plain so which one is
+// the default is unambiguous.
+func TestButtonTextCarriesCountdownOnDefaultOnly(t *testing.T) {
+	if got := buttonText("Allow", daemon.ActionAllow, daemon.ActionAllow, 12); got != "Allow (12)" {
+		t.Errorf("default button = %q, want \"Allow (12)\"", got)
+	}
+	if got := buttonText("Deny", daemon.ActionDeny, daemon.ActionAllow, 12); got != "Deny" {
+		t.Errorf("non-default button = %q, want plain \"Deny\"", got)
+	}
+	// And the other way round when deny is the default.
+	if got := buttonText("Deny", daemon.ActionDeny, daemon.ActionDeny, 5); got != "Deny (5)" {
+		t.Errorf("default button = %q, want \"Deny (5)\"", got)
+	}
+	if got := buttonText("Allow", daemon.ActionAllow, daemon.ActionDeny, 5); got != "Allow" {
+		t.Errorf("non-default button = %q, want plain \"Allow\"", got)
+	}
+}
+
+func TestSecondsLeftRoundsUp(t *testing.T) {
 	cases := []struct {
 		left time.Duration
-		want string
+		want int
 	}{
-		{15 * time.Second, "No answer in 15s → allow / once (default)"},
-		{1500 * time.Millisecond, "No answer in 2s → allow / once (default)"},
-		{200 * time.Millisecond, "No answer in 1s → allow / once (default)"},
-		{0, "No answer in 0s → allow / once (default)"},
-		{-5 * time.Second, "No answer in 0s → allow / once (default)"},
+		{15 * time.Second, 15},
+		{1500 * time.Millisecond, 2},
+		{200 * time.Millisecond, 1},
+		{0, 0},
+		{-5 * time.Second, 0},
 	}
 	for _, c := range cases {
-		if got := countdownText(c.left, "allow", "once"); got != c.want {
-			t.Errorf("countdownText(%v) = %q, want %q", c.left, got, c.want)
+		if got := secondsLeft(c.left); got != c.want {
+			t.Errorf("secondsLeft(%v) = %d, want %d", c.left, got, c.want)
 		}
 	}
 }
 
-// The countdown names the action that will actually be applied.
-func TestCountdownNamesConfiguredDefault(t *testing.T) {
-	got := countdownText(10*time.Second, "deny", "once")
-	if !contains(got, "deny") {
-		t.Fatalf("countdown %q should name the deny default", got)
+// "Once" must be offered, and first: it is the least committal choice and the
+// one an unanswered prompt applies.
+func TestOnceIsTheFirstDurationOption(t *testing.T) {
+	if durationOptions[0].value != daemon.DurationOnce {
+		t.Fatalf("first option is %q, want once", durationOptions[0].value)
+	}
+	s := newSegmented(durationOptions, FallbackDuration, nil)
+	if s.Value() != daemon.DurationOnce {
+		t.Fatalf("prompt preselects %q, want once", s.Value())
 	}
 }

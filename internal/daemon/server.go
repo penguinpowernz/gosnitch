@@ -68,6 +68,19 @@ func NewServer(store *Store, defaultAction, defaultDuration, version string) *Se
 	}
 }
 
+// SetDefaults changes what an unanswered prompt applies. Safe to call while
+// serving: AskRule reads these under the same lock.
+func (s *Server) SetDefaults(action, duration string) {
+	s.mu.Lock()
+	if action != "" {
+		s.defAct = action
+	}
+	if duration != "" {
+		s.defDur = duration
+	}
+	s.mu.Unlock()
+}
+
 // SetPrompter installs the interactive prompt. Safe to call before Serve.
 func (s *Server) SetPrompter(p Prompter) { s.prompt = p }
 
@@ -121,7 +134,9 @@ func (s *Server) Subscribe(ctx context.Context, cfg *protocol.ClientConfig) (*pr
 func (s *Server) AskRule(ctx context.Context, conn *protocol.Connection) (*protocol.Rule, error) {
 	s.markSeen("")
 
+	s.mu.RLock()
 	d := Decision{Action: s.defAct, Duration: s.defDur}
+	s.mu.RUnlock()
 	if s.prompt != nil {
 		if answer, ok := s.prompt(conn); ok {
 			d = answer

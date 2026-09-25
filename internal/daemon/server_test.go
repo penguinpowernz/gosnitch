@@ -124,3 +124,26 @@ func TestStatusReportsDisconnectAfterStalePing(t *testing.T) {
 		t.Fatal("still reported connected after a stale ping")
 	}
 }
+
+// The tray can change the default while the server is running, and an
+// unanswered prompt must then apply the new one.
+func TestSetDefaultsChangesTimeoutFallback(t *testing.T) {
+	s := NewServer(NewStore(10), ActionAllow, DurationOnce, "test")
+	s.SetPrompter(func(*protocol.Connection) (Decision, bool) { return Decision{}, false })
+
+	rule, _ := s.AskRule(context.Background(), &protocol.Connection{ProcessPath: "/bin/sh"})
+	if rule.GetAction() != ActionAllow {
+		t.Fatalf("got %q, want the initial allow default", rule.GetAction())
+	}
+
+	s.SetDefaults(ActionDeny, "")
+
+	rule, _ = s.AskRule(context.Background(), &protocol.Connection{ProcessPath: "/bin/sh"})
+	if rule.GetAction() != ActionDeny {
+		t.Fatalf("got %q, want deny after SetDefaults", rule.GetAction())
+	}
+	// The duration must stay pinned when only the action is changed.
+	if rule.GetDuration() != DurationOnce {
+		t.Fatalf("duration = %q, want once", rule.GetDuration())
+	}
+}

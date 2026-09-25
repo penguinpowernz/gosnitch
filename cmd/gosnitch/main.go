@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
 	"github.com/penguinpowernz/gosnitch/internal/ui"
@@ -22,9 +21,7 @@ func main() {
 	var (
 		addr        = flag.String("address", defaultAddress(), "address to listen on for the daemon (unix:///path or host:port)")
 		rulesPath   = flag.String("rules", daemon.DefaultRulesPath, "directory opensnitchd keeps its rules in")
-		defAction   = flag.String("default-action", daemon.ActionAllow, "action when not prompting or when a prompt times out (allow|deny|reject)")
-		defDuration = flag.String("default-duration", daemon.DurationOnce, "rule duration (once|until restart|always)")
-		timeout     = flag.Duration("timeout", 15*time.Second, "how long a prompt waits before applying the default action")
+		defAction   = flag.String("default-action", daemon.ActionAllow, "initial action when a prompt is not answered (allow|deny|reject); changeable from the tray")
 		interactive = flag.Bool("interactive", true, "prompt on connections with no matching rule")
 		hidden      = flag.Bool("hidden", false, "start with the window hidden in the tray")
 		showVersion = flag.Bool("version", false, "print version and exit")
@@ -42,7 +39,9 @@ func main() {
 	}
 
 	store := daemon.NewStore(1000)
-	srv := daemon.NewServer(store, *defAction, *defDuration, version)
+	// The duration a timeout applies is fixed at "once" so an unanswered
+	// prompt can never create a lasting rule.
+	srv := daemon.NewServer(store, *defAction, ui.FallbackDuration, version)
 
 	ln, err := daemon.Listen(*addr)
 	if err != nil {
@@ -69,12 +68,10 @@ func main() {
 	}()
 
 	a := ui.New(store, srv, ui.Options{
-		RulesPath:       *rulesPath,
-		DefaultAction:   *defAction,
-		DefaultDuration: *defDuration,
-		PromptTimeout:   *timeout,
-		Interactive:     *interactive,
-		StartHidden:     *hidden,
+		RulesPath:     *rulesPath,
+		DefaultAction: *defAction,
+		Interactive:   *interactive,
+		StartHidden:   *hidden,
 	})
 	a.Run()
 }
