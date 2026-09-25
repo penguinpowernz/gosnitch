@@ -90,7 +90,7 @@ So every control is a full-size button:
   Always limited to firefox. Narrow it further:
   [ ✓ www.mozilla.org ][   port 443 ][   user 1000 ]
 
-  [      Deny      ][    Allow (12)   ]
+  [   Deny (58)    ][      Allow      ]
 ```
 
 - **Duration** is a single-select row: clicking one deselects the rest.
@@ -107,14 +107,20 @@ inert, and the window focuses no widget, so only a deliberate click answers.
 Escape dismisses the prompt, which applies the default action rather than
 creating a rule.
 
-The countdown rides on the button the timeout would press - `Allow (12)` - so
+The countdown rides on the button the timeout would press - `Deny (58)` - so
 the default is visible exactly where it will land, and the other button stays
 plain. Change which one that is from the tray.
 
+**Touching any button cancels the timeout.** Picking a duration or flipping a
+scope toggle proves you are there and deciding, so the counter disappears and
+the prompt waits for a deliberate Allow or Deny - however long you take. The
+timeout exists for prompts nobody is looking at, not to race someone who is.
+
 Two things are deliberately **not** configurable:
 
-- The prompt **timeout is fixed at 30 seconds**. It is the window in which an
-  unattended machine decides for itself, so it should not drift.
+- The prompt **timeout is fixed at 60 seconds**, and only applies to an
+  untouched prompt. It is the window in which an unattended machine decides
+  for itself, so it should not drift.
 - An unanswered prompt always applies the default action **for `once` only**,
   whatever the duration buttons show. A timeout can never create a lasting
   rule.

@@ -14,10 +14,12 @@ import (
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
 )
 
-// PromptTimeout is how long a prompt waits before applying the default. Fixed
-// rather than configurable: it is the window in which an unattended machine
-// decides for itself, so it should not drift.
-const PromptTimeout = 30 * time.Second
+// PromptTimeout is how long an untouched prompt waits before applying the
+// default. Fixed rather than configurable: it is the window in which an
+// unattended machine decides for itself, so it should not drift.
+//
+// Touching any control in the prompt cancels it entirely - see buildPrompt.
+const PromptTimeout = 60 * time.Second
 
 // FallbackDuration is the duration applied when a prompt is not answered.
 // Always "once", so a timeout can never create a lasting rule.

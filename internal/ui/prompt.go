@@ -49,16 +49,26 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	win.Resize(fyne.NewSize(620, 420))
 	win.CenterOnScreen()
 
+	// stopCountdown is filled in once the buttons exist. Touching any control
+	// cancels the timeout: the user is clearly here and deciding, so the
+	// prompt should wait for them rather than answer over the top.
+	var stopCountdown func()
+	touched := func() {
+		if stopCountdown != nil {
+			stopCountdown()
+		}
+	}
+
 	// "Once" starts selected: the least committal choice, and the one a
 	// timeout would apply anyway.
-	dur := newSegmented(durationOptions, FallbackDuration, nil)
+	dur := newSegmented(durationOptions, FallbackDuration, func(string) { touched() })
 
 	// Scope toggles name the value they pin the rule to, so what each one
 	// does is readable without looking anywhere else.
 	dest := destLabel(conn)
-	destToggle := newToggle(dest, false)
-	portToggle := newToggle(fmt.Sprintf("port %d", conn.GetDstPort()), false)
-	userToggle := newToggle(fmt.Sprintf("user %d", conn.GetUserId()), false)
+	destToggle := newToggle(dest, false, touched)
+	portToggle := newToggle(fmt.Sprintf("port %d", conn.GetDstPort()), false, touched)
+	userToggle := newToggle(fmt.Sprintf("user %d", conn.GetUserId()), false, touched)
 
 	if dest == "" {
 		// Nothing to pin to; leave the button visible but inert rather than
@@ -116,12 +126,27 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	// rather than in a separate line of text.
 	deadline := time.Now().Add(a.promptTimeout)
 	defaultAction := a.defaultAction
+	stopped := make(chan struct{})
+	countdownStopped := false
+
 	setCountdown := func() {
 		secs := secondsLeft(time.Until(deadline))
 		allow.SetText(buttonText("Allow", daemon.ActionAllow, defaultAction, secs))
 		deny.SetText(buttonText("Deny", daemon.ActionDeny, defaultAction, secs))
 	}
 	setCountdown()
+
+	// Cancel the timeout and drop the counter from the button, so it is clear
+	// nothing will happen until the user answers.
+	stopCountdown = func() {
+		if countdownStopped {
+			return
+		}
+		countdownStopped = true
+		close(stopped)
+		allow.SetText("Allow")
+		deny.SetText("Deny")
+	}
 
 	win.SetContent(container.NewVBox(
 		widget.NewLabelWithStyle(promptHeadline(conn), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -150,12 +175,27 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 			select {
 			case <-done:
 				return
+			case <-stopped:
+				return
 			case <-t.C:
-				if time.Now().After(deadline) {
-					fyne.Do(func() { finish(promptResult{ok: false}) })
+				// select picks randomly among ready channels, so a tick can
+				// win the race against a just-closed stopped. Re-check on the
+				// UI goroutine, which is the only place countdownStopped is
+				// written, so a touched prompt can never time out.
+				expired := time.Now().After(deadline)
+				fyne.Do(func() {
+					if countdownStopped {
+						return
+					}
+					if expired {
+						finish(promptResult{ok: false})
+						return
+					}
+					setCountdown()
+				})
+				if expired {
 					return
 				}
-				fyne.Do(setCountdown)
 			}
 		}
 	}()

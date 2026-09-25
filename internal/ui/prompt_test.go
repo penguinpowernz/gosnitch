@@ -76,7 +76,7 @@ func TestSegmentedHonoursPreselection(t *testing.T) {
 }
 
 func TestToggleFlips(t *testing.T) {
-	tg := newToggle("port 443", false)
+	tg := newToggle("port 443", false, nil)
 	if tg.On() {
 		t.Fatal("should start off")
 	}
@@ -93,7 +93,7 @@ func TestToggleFlips(t *testing.T) {
 // Toggle labels must name the value they pin to, so the user can see what
 // they are enabling without reading the details block.
 func TestToggleLabelShowsItsValue(t *testing.T) {
-	tg := newToggle("port 443", true)
+	tg := newToggle("port 443", true, nil)
 	if got := tg.button.Text; got == "" || !contains(got, "443") {
 		t.Fatalf("label %q should contain the port", got)
 	}
@@ -198,5 +198,43 @@ func TestTrayOffersAllowAndDenyOnly(t *testing.T) {
 	}
 	if !validAction(daemon.ActionReject) {
 		t.Error("reject should still be accepted from -default-action")
+	}
+}
+
+// Touching a duration button must cancel the timeout: the user is plainly
+// here and deciding, so the prompt must wait rather than answer over them.
+func TestSegmentedChangeNotifies(t *testing.T) {
+	var touched bool
+	s := newSegmented(durationOptions, daemon.DurationOnce, func(string) { touched = true })
+
+	// Selecting the already-selected option is not a change, so it must not
+	// count as a touch.
+	s.selectIndex(0)
+	if touched {
+		t.Fatal("reselecting the current option should not notify")
+	}
+
+	s.selectIndex(2)
+	if !touched {
+		t.Fatal("changing the duration should notify")
+	}
+}
+
+func TestToggleNotifiesOnEachTap(t *testing.T) {
+	var n int
+	tg := newToggle("port 443", false, func() { n++ })
+
+	tg.button.OnTapped()
+	tg.button.OnTapped() // toggling back off is still a touch
+	if n != 2 {
+		t.Fatalf("got %d notifications, want 2", n)
+	}
+}
+
+// The timeout is the window an unattended machine gets before deciding for
+// itself; a minute is long enough to walk back to the keyboard.
+func TestPromptTimeoutIsOneMinute(t *testing.T) {
+	if PromptTimeout != time.Minute {
+		t.Fatalf("PromptTimeout = %v, want 1m", PromptTimeout)
 	}
 }

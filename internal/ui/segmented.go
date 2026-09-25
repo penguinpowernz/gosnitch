@@ -90,11 +90,14 @@ type toggle struct {
 	on     bool
 }
 
-func newToggle(label string, on bool) *toggle {
+func newToggle(label string, on bool, onChange func()) *toggle {
 	t := &toggle{label: label, on: on}
 	t.button = widget.NewButton(label, func() {
 		t.on = !t.on
 		t.paint()
+		if onChange != nil {
+			onChange()
+		}
 	})
 	t.paint()
 	return t
