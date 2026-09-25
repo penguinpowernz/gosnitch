@@ -50,7 +50,7 @@ The daemon reconnects on its own within a few seconds.
 | `-rules` | `/etc/opensnitchd/rules` | Directory the daemon keeps rules in. Read-only to gosnitch. |
 | `-interactive` | `true` | Prompt on unmatched connections. `false` records silently and applies the default. |
 | `-default-action` | `allow` | `allow`, `deny` or `reject`. Used when not prompting, or when a prompt times out. |
-| `-default-duration` | `once` | `once`, `until restart` or `always`. |
+| `-default-duration` | `once` | Preselected duration: `30s`, `5m`, `1h`, `until restart` or `always`. |
 | `-timeout` | `15s` | How long a prompt waits before applying the default. |
 | `-hidden` | `false` | Start minimised to the tray. |
 
@@ -69,6 +69,46 @@ deletion cannot be undone.
 
 - **Tray icon** → *Show events*, *Manage rules*, *Quit*.
 - Closing the window **hides** it to the tray rather than quitting.
+
+### The prompt
+
+The prompt is built around one idea: a security prompt you answer many times a
+day must be answerable **without careful aiming**. Small checkboxes add friction,
+and friction on a security tool trains you to click through it.
+
+So every control is a full-size button:
+
+```
+  firefox wants to connect to www.mozilla.org
+
+  For how long
+  [ 30 sec ][ 5 min ][ 1 hour ][ Until reboot ][ Forever ]
+
+  Apply to
+  Always limited to firefox. Narrow it further:
+  [ ✓ www.mozilla.org ][   port 443 ][   user 1000 ]
+
+  [      Deny      ][      Allow      ]
+       No answer in 12s → allow (default)
+```
+
+- **Duration** is a single-select row: clicking one deselects the rest.
+- **Scope** toggles are independent, and each shows the value it pins to, so
+  you can see what you are enabling. The rule is always limited to the
+  executable; these narrow it further.
+- The two shapes this is tuned for are *deny forever to a destination* and
+  *allow forever, pinned to destination + port + user*.
+
+**Enter does nothing.** A prompt can appear at any moment, including
+mid-keystroke while you are typing somewhere else, and an Enter landing on
+*Allow* would create a rule you never saw. Return, Enter and Space are all
+inert, and the window focuses no widget, so only a deliberate click answers.
+Escape dismisses the prompt, which applies the default action rather than
+creating a rule.
+
+A countdown at the foot of the window shows how long is left and which action
+will be applied if you do not answer, so the deadline is never a surprise. It
+is set by `-timeout`.
 
 ### How deleting works
 
@@ -120,7 +160,8 @@ protoc --go_out=. --go_opt=module=github.com/penguinpowernz/gosnitch \
 - Only one OpenSnitch UI can bind the socket at a time.
 - gosnitch can list and delete rules, but not edit or create them beyond the
   rule implied by answering a prompt. Use the Python UI to edit.
-- Rules gosnitch *writes* are always scoped to `process.path`. The Python UI
-  offers finer operands (destination host, port, user). gosnitch *displays*
-  all of those correctly; it just does not author them yet.
+- Rules gosnitch writes are scoped to the executable, optionally narrowed by
+  destination, port and user. The Python UI offers further operands (process
+  command line, network ranges, regex matches) that gosnitch does not author,
+  though it displays them correctly.
 - No rule history: events are kept in memory only and lost on exit.

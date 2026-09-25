@@ -32,8 +32,8 @@ func TestAskRuleUsesDefaultWithoutPrompter(t *testing.T) {
 func TestAskRuleUsesPrompterAnswer(t *testing.T) {
 	st := NewStore(10)
 	s := NewServer(st, ActionAllow, DurationOnce, "test")
-	s.SetPrompter(func(*protocol.Connection) (string, string, bool) {
-		return ActionReject, DurationUntilRestart, true
+	s.SetPrompter(func(*protocol.Connection) (Decision, bool) {
+		return Decision{Action: ActionReject, Duration: DurationUntilRestart}, true
 	})
 
 	rule, _ := s.AskRule(context.Background(), &protocol.Connection{ProcessPath: "/bin/sh"})
@@ -44,10 +44,34 @@ func TestAskRuleUsesPrompterAnswer(t *testing.T) {
 
 // A prompter that declines (window closed, timed out) must fall back rather
 // than leaving the daemon without an answer.
+// A scope chosen in the prompt must survive into the rule the daemon gets.
+func TestAskRuleAppliesPrompterScope(t *testing.T) {
+	s := NewServer(NewStore(10), ActionAllow, DurationOnce, "test")
+	s.SetPrompter(func(*protocol.Connection) (Decision, bool) {
+		return Decision{
+			Action:   ActionAllow,
+			Duration: DurationAlways,
+			Scope:    Scope{Dest: true, Port: true, User: true},
+		}, true
+	})
+
+	rule, _ := s.AskRule(context.Background(), &protocol.Connection{
+		ProcessPath: "/usr/bin/curl", DstHost: "example.com", DstPort: 443, UserId: 1000,
+	})
+	if rule.GetOperator().GetType() != "list" {
+		t.Fatalf("operator type = %q, want list", rule.GetOperator().GetType())
+	}
+	for _, want := range []string{"example.com", "443", "1000", "/usr/bin/curl"} {
+		if !contains(rule.GetOperator().GetData(), want) {
+			t.Errorf("operator data missing %q: %s", want, rule.GetOperator().GetData())
+		}
+	}
+}
+
 func TestAskRuleFallsBackWhenPrompterDeclines(t *testing.T) {
 	st := NewStore(10)
 	s := NewServer(st, ActionAllow, DurationOnce, "test")
-	s.SetPrompter(func(*protocol.Connection) (string, string, bool) { return "", "", false })
+	s.SetPrompter(func(*protocol.Connection) (Decision, bool) { return Decision{}, false })
 
 	rule, _ := s.AskRule(context.Background(), &protocol.Connection{ProcessPath: "/bin/sh"})
 	if rule.GetAction() != ActionAllow {
@@ -56,9 +80,10 @@ func TestAskRuleFallsBackWhenPrompterDeclines(t *testing.T) {
 }
 
 func TestRuleNameMatchesPythonSlug(t *testing.T) {
-	got := ruleName(ActionAllow, DurationOnce, &protocol.Connection{ProcessPath: "/usr/bin/curl"})
-	if want := "allow-once-simple-usr-bin-curl"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	r := BuildRule(&protocol.Connection{ProcessPath: "/usr/bin/curl"},
+		Decision{Action: ActionAllow, Duration: DurationOnce})
+	if want := "allow-once-simple-usr-bin-curl"; r.GetName() != want {
+		t.Fatalf("got %q, want %q", r.GetName(), want)
 	}
 }
 

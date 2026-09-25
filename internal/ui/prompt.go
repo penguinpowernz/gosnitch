@@ -14,95 +14,203 @@ import (
 	"github.com/penguinpowernz/gosnitch/internal/protocol"
 )
 
-var durationLabels = []string{
-	"once",
-	"until restart",
-	"always",
+// Duration choices, shown as one row of buttons. The labels are friendlier
+// than the wire values the daemon parses.
+var durationOptions = []segmentOption{
+	{"30 sec", daemon.Duration30s},
+	{"5 min", daemon.Duration5m},
+	{"1 hour", daemon.Duration1h},
+	{"Until reboot", daemon.DurationUntilRestart},
+	{"Forever", daemon.DurationAlways},
 }
 
 // promptResult carries the user's answer back to the blocked gRPC handler.
 type promptResult struct {
-	action   string
-	duration string
+	decision daemon.Decision
 	ok       bool
 }
 
-// ask shows a modal asking what to do about conn, and blocks until the user
-// answers or timeout elapses. It is called from the gRPC goroutine, so all
-// widget work is marshalled onto the Fyne goroutine via fyne.Do.
-func (a *App) ask(conn *protocol.Connection) (string, string, bool) {
+// ask shows the prompt for conn and blocks until the user answers or the
+// timeout elapses. It is called from a gRPC goroutine, so all widget work is
+// marshalled onto the Fyne goroutine.
+func (a *App) ask(conn *protocol.Connection) (daemon.Decision, bool) {
 	// Buffered so a timeout never leaks the answering goroutine.
 	res := make(chan promptResult, 1)
 
-	fyne.Do(func() {
-		win := a.fyne.NewWindow("OpenSnitch")
-		win.Resize(fyne.NewSize(520, 260))
-		win.CenterOnScreen()
-
-		dur := widget.NewSelect(durationLabels, nil)
-		dur.SetSelected(a.defaultDuration)
-
-		answered := false
-		answer := func(action string) {
-			if answered {
-				return
-			}
-			answered = true
-			res <- promptResult{action: action, duration: dur.Selected, ok: true}
-			win.Close()
-		}
-
-		allow := widget.NewButton("Allow", func() { answer(daemon.ActionAllow) })
-		allow.Importance = widget.HighImportance
-		deny := widget.NewButton("Deny", func() { answer(daemon.ActionDeny) })
-
-		// Closing the window without choosing must still release the daemon.
-		win.SetCloseIntercept(func() {
-			if !answered {
-				answered = true
-				res <- promptResult{ok: false}
-			}
-			win.Close()
-		})
-
-		win.SetContent(container.NewVBox(
-			widget.NewLabelWithStyle(promptHeadline(conn), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-			widget.NewSeparator(),
-			widget.NewLabel(promptDetail(conn)),
-			widget.NewSeparator(),
-			container.NewBorder(nil, nil, widget.NewLabel("Duration:"), nil, dur),
-			container.NewGridWithColumns(2, deny, allow),
-		))
-		win.Show()
-		win.RequestFocus()
-
-		// Mirror the daemon's own timeout so a missed prompt is not fatal.
-		go func() {
-			time.Sleep(a.promptTimeout)
-			fyne.Do(func() {
-				if !answered {
-					answered = true
-					res <- promptResult{ok: false}
-					win.Close()
-				}
-			})
-		}()
-	})
+	fyne.Do(func() { a.buildPrompt(conn, res) })
 
 	r := <-res
-	return r.action, r.duration, r.ok
+	return r.decision, r.ok
+}
+
+func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
+	win := a.fyne.NewWindow("OpenSnitch")
+	win.Resize(fyne.NewSize(620, 420))
+	win.CenterOnScreen()
+
+	dur := newSegmented(durationOptions, a.defaultDuration, nil)
+
+	// Scope toggles name the value they pin the rule to, so what each one
+	// does is readable without looking anywhere else.
+	dest := destLabel(conn)
+	destToggle := newToggle(dest, false)
+	portToggle := newToggle(fmt.Sprintf("port %d", conn.GetDstPort()), false)
+	userToggle := newToggle(fmt.Sprintf("user %d", conn.GetUserId()), false)
+
+	if dest == "" {
+		// Nothing to pin to; leave the button visible but inert rather than
+		// shifting the layout around.
+		destToggle.button.Disable()
+	}
+
+	// finish answers the prompt exactly once. Every caller runs on the Fyne
+	// goroutine (button taps, the close intercept, and the ticker via
+	// fyne.Do), so the answered flag needs no lock and done is closed once.
+	answered := false
+	done := make(chan struct{})
+	finish := func(r promptResult) {
+		if answered {
+			return
+		}
+		answered = true
+		close(done) // stops the countdown ticker
+		res <- r
+		win.Close()
+	}
+
+	answer := func(action string) {
+		finish(promptResult{
+			ok: true,
+			decision: daemon.Decision{
+				Action:   action,
+				Duration: dur.Value(),
+				Scope: daemon.Scope{
+					Dest: destToggle.On(),
+					Port: portToggle.On(),
+					User: userToggle.On(),
+				},
+			},
+		})
+	}
+
+	allow := widget.NewButton("Allow", func() { answer(daemon.ActionAllow) })
+	allow.Importance = widget.SuccessImportance
+	deny := widget.NewButton("Deny", func() { answer(daemon.ActionDeny) })
+	deny.Importance = widget.DangerImportance
+
+	// Closing the window without choosing must still release the daemon.
+	win.SetCloseIntercept(func() { finish(promptResult{ok: false}) })
+
+	// See promptKeyHandler: Enter and Space are deliberately inert here.
+	win.Canvas().SetOnTypedKey(promptKeyHandler(func() {
+		finish(promptResult{ok: false})
+	}))
+	// Focus nothing, so no widget can receive a key press in the first place.
+	win.Canvas().Unfocus()
+
+	countdown := widget.NewLabel("")
+	countdown.Alignment = fyne.TextAlignCenter
+	deadline := time.Now().Add(a.promptTimeout)
+	setCountdown := func() {
+		countdown.SetText(countdownText(time.Until(deadline), a.defaultAction, a.defaultDuration))
+	}
+	setCountdown()
+
+	win.SetContent(container.NewVBox(
+		widget.NewLabelWithStyle(promptHeadline(conn), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(promptDetail(conn)),
+		widget.NewSeparator(),
+
+		widget.NewLabelWithStyle("For how long", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		dur.content(),
+
+		widget.NewLabelWithStyle("Apply to", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("Always limited to "+processName(conn)+". Narrow it further:"),
+		container.NewGridWithColumns(3, destToggle.button, portToggle.button, userToggle.button),
+
+		widget.NewSeparator(),
+		container.NewGridWithColumns(2, deny, allow),
+		countdown,
+	))
+
+	win.Show()
+
+	// Mirror the daemon's own timeout so a missed prompt is not fatal, and
+	// show the time left so the deadline is never a surprise.
+	go func() {
+		t := time.NewTicker(250 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if time.Now().After(deadline) {
+					fyne.Do(func() { finish(promptResult{ok: false}) })
+					return
+				}
+				fyne.Do(setCountdown)
+			}
+		}
+	}()
+}
+
+// countdownText says what will happen and when, rather than just showing a
+// number: the deadline only matters because it applies the default.
+//
+// It names the duration as well as the action, because a timeout ignores the
+// duration buttons entirely and falls back to -default-duration. Without that,
+// a selected "30 sec" button implies a timeout would use it.
+func countdownText(left time.Duration, defaultAction, defaultDuration string) string {
+	if left < 0 {
+		left = 0
+	}
+	// Round up, so the last visible second is "1s" rather than "0s".
+	secs := int((left + time.Second - 1) / time.Second)
+	return fmt.Sprintf("No answer in %ds → %s / %s (default)", secs, defaultAction, defaultDuration)
+}
+
+// promptKeyHandler makes the keys that could activate a focused button inert.
+//
+// This is the whole point of the prompt's key handling: a connection prompt can
+// appear at any moment, including mid-keystroke while the user is typing
+// somewhere else. If Enter reached the Allow button, a rule could be created
+// without the user ever seeing the window. Only a deliberate click answers.
+// Escape dismisses, which is safe because it applies the default action.
+func promptKeyHandler(dismiss func()) func(*fyne.KeyEvent) {
+	return func(ev *fyne.KeyEvent) {
+		switch ev.Name {
+		case fyne.KeyReturn, fyne.KeyEnter, fyne.KeySpace:
+			return // deliberately inert
+		case fyne.KeyEscape:
+			dismiss()
+		}
+	}
+}
+
+func processName(c *protocol.Connection) string {
+	name := filepath.Base(c.GetProcessPath())
+	if name == "" || name == "." || name == "/" {
+		return fmt.Sprintf("process %d", c.GetProcessId())
+	}
+	return name
+}
+
+// destLabel is what the destination toggle pins to: the hostname when known,
+// otherwise the IP.
+func destLabel(c *protocol.Connection) string {
+	if h := c.GetDstHost(); h != "" {
+		return h
+	}
+	return c.GetDstIp()
 }
 
 func promptHeadline(c *protocol.Connection) string {
-	name := filepath.Base(c.GetProcessPath())
-	if name == "" || name == "." {
-		name = fmt.Sprintf("process %d", c.GetProcessId())
-	}
-	dest := c.GetDstHost()
+	dest := destLabel(c)
 	if dest == "" {
-		dest = c.GetDstIp()
+		dest = "an unknown address"
 	}
-	return fmt.Sprintf("%s wants to connect to %s", name, dest)
+	return fmt.Sprintf("%s wants to connect to %s", processName(c), dest)
 }
 
 func promptDetail(c *protocol.Connection) string {

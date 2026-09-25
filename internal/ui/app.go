@@ -11,7 +11,6 @@ import (
 	"fyne.io/fyne/v2/theme"
 
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
-	"github.com/penguinpowernz/gosnitch/internal/protocol"
 )
 
 // Options configure the UI at startup.
@@ -35,6 +34,7 @@ type App struct {
 	store     *daemon.Store
 	ruleStore *daemon.RuleStore
 
+	defaultAction   string
 	defaultDuration string
 	promptTimeout   time.Duration
 	interactive     bool
@@ -49,6 +49,9 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 	if opts.DefaultDuration == "" {
 		opts.DefaultDuration = daemon.DurationOnce
 	}
+	if opts.DefaultAction == "" {
+		opts.DefaultAction = daemon.ActionAllow
+	}
 
 	fa := app.NewWithID("nz.co.penguinpower.gosnitch")
 
@@ -56,6 +59,7 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 		fyne:            fa,
 		store:           store,
 		srv:             srv,
+		defaultAction:   opts.DefaultAction,
 		defaultDuration: opts.DefaultDuration,
 		promptTimeout:   opts.PromptTimeout,
 		interactive:     opts.Interactive,
@@ -68,9 +72,7 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 	a.buildTray()
 
 	if opts.Interactive {
-		srv.SetPrompter(func(c *protocol.Connection) (string, string, bool) {
-			return a.ask(c)
-		})
+		srv.SetPrompter(a.ask)
 	}
 
 	// Both callbacks arrive on gRPC goroutines; hop to the UI thread.

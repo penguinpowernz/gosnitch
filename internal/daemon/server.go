@@ -31,8 +31,8 @@ const (
 )
 
 // Prompter decides what to do with a connection the daemon has no rule for.
-// Returning an error (or a nil Prompter) falls back to the default action.
-type Prompter func(*protocol.Connection) (action, duration string, ok bool)
+// Returning ok=false (or a nil Prompter) falls back to the default action.
+type Prompter func(*protocol.Connection) (Decision, bool)
 
 // Server implements protocol.UIServer. OpenSnitch inverts the usual roles: the
 // UI listens and the daemon connects to it, so this is a server, not a client.
@@ -121,26 +121,16 @@ func (s *Server) Subscribe(ctx context.Context, cfg *protocol.ClientConfig) (*pr
 func (s *Server) AskRule(ctx context.Context, conn *protocol.Connection) (*protocol.Rule, error) {
 	s.markSeen("")
 
-	action, duration := s.defAct, s.defDur
+	d := Decision{Action: s.defAct, Duration: s.defDur}
 	if s.prompt != nil {
-		if a, d, ok := s.prompt(conn); ok {
-			action, duration = a, d
+		if answer, ok := s.prompt(conn); ok {
+			d = answer
 		}
 	}
 
-	s.store.Add(EntryFromConn(conn, action, time.Now()))
+	s.store.Add(EntryFromConn(conn, d.Action, time.Now()))
 
-	return &protocol.Rule{
-		Name:     ruleName(action, duration, conn),
-		Enabled:  true,
-		Action:   action,
-		Duration: duration,
-		Operator: &protocol.Operator{
-			Type:    "simple",
-			Operand: "process.path",
-			Data:    conn.GetProcessPath(),
-		},
-	}, nil
+	return BuildRule(conn, d), nil
 }
 
 // notifyStream is the live Notifications stream to the daemon, plus the
@@ -263,12 +253,6 @@ func (s *Server) DeleteRule(ctx context.Context, name string) error {
 		ns.mu.Unlock()
 		return ctx.Err()
 	}
-}
-
-// ruleName mirrors the naming scheme the Python UI uses, so rules written by
-// either client look the same in the rules directory.
-func ruleName(action, duration string, conn *protocol.Connection) string {
-	return slugify(fmt.Sprintf("%s-%s-simple-%s", action, duration, conn.GetProcessPath()))
 }
 
 func slugify(s string) string {

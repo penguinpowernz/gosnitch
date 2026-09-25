@@ -66,7 +66,13 @@ func main() {
 		if err != nil {
 			log.Fatal("AskRule: ", err)
 		}
-		fmt.Printf("ask %-34s -> %s/%s\n", s.path, rule.GetAction(), rule.GetDuration())
+		// Print the whole rule: the operand list is the part worth eyeballing
+		// against a real file in /etc/opensnitchd/rules.
+		fmt.Printf("ask %-30s -> %s/%s  [%s]\n", s.path, rule.GetAction(), rule.GetDuration(), rule.GetOperator().GetType())
+		fmt.Printf("    name: %s\n", rule.GetName())
+		if d := rule.GetOperator().GetData(); d != "" {
+			fmt.Printf("    data: %s\n", d)
+		}
 		time.Sleep(*every)
 	}
 }
