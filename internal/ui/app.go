@@ -128,6 +128,9 @@ func titleCase(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// trayActions are the default actions offered in the tray menu.
+var trayActions = []string{daemon.ActionAllow, daemon.ActionDeny}
+
 // prefDefaultAction is the preferences key the tray choice persists under.
 const prefDefaultAction = "default_action"
 
@@ -162,10 +165,17 @@ func (a *App) buildTray() {
 	// Only the default action is configurable. The duration a timeout applies
 	// is always "once" and the timeout itself is fixed, so neither can be set
 	// to something that would quietly create lasting rules unattended.
-	actionItems := make([]*fyne.MenuItem, 0, 3)
-	for _, act := range []string{daemon.ActionAllow, daemon.ActionDeny, daemon.ActionReject} {
+	//
+	// Reject is deliberately absent: it is a rare choice, and a third item
+	// makes the menu something to read rather than a quick switch. It is
+	// still accepted from -default-action for anyone who wants it.
+	actionItems := make([]*fyne.MenuItem, 0, len(trayActions))
+	for _, act := range trayActions {
 		act := act
 		item := fyne.NewMenuItem(titleCase(act), func() { a.setDefaultAction(act) })
+		// Under -default-action reject neither item is ticked, which is
+		// accurate: reject is in force and is not one of these. Picking
+		// either switches to it.
 		item.Checked = a.defaultAction == act
 		actionItems = append(actionItems, item)
 	}

@@ -49,7 +49,7 @@ The daemon reconnects on its own within a few seconds.
 | `-address` | `unix:///tmp/osui.sock` | Where to listen. Must match the daemon's `Server.Address`. |
 | `-rules` | `/etc/opensnitchd/rules` | Directory the daemon keeps rules in. Read-only to gosnitch. |
 | `-interactive` | `true` | Prompt on unmatched connections. `false` records silently and applies the default. |
-| `-default-action` | `allow` | `allow`, `deny` or `reject` when a prompt goes unanswered. Only seeds the initial value; change it from the tray afterwards. |
+| `-default-action` | `allow` | `allow`, `deny` or `reject` when a prompt goes unanswered. Only seeds the initial value; the tray changes it afterwards (allow and deny only). |
 | `-hidden` | `false` | Start minimised to the tray. |
 
 `GOSNITCH_ADDRESS` overrides the default address.
@@ -66,8 +66,10 @@ Select one and press **Delete rule**; gosnitch confirms first, because
 deletion cannot be undone.
 
 - **Tray icon** → *Show events*, *Manage rules*, *Default action*, *Quit*.
-- **Default action** picks what an unanswered prompt does. The choice is
-  remembered across restarts, and the countdown moves to that button.
+- **Default action** picks what an unanswered prompt does: *Allow* or *Deny*.
+  The choice is remembered across restarts, and the countdown moves to that
+  button. `reject` is accepted from `-default-action` but is not offered in
+  the menu, which keeps it a quick switch rather than something to read.
 - Closing the window **hides** it to the tray rather than quitting.
 
 ### The prompt

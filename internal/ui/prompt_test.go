@@ -186,3 +186,17 @@ func TestOnceIsTheFirstDurationOption(t *testing.T) {
 		t.Fatalf("prompt preselects %q, want once", s.Value())
 	}
 }
+
+// The tray offers allow and deny only: reject is rare, and a third item turns
+// a quick switch into something to read. It stays valid from the flag.
+func TestTrayOffersAllowAndDenyOnly(t *testing.T) {
+	if got := len(trayActions); got != 2 {
+		t.Fatalf("tray offers %d actions, want 2", got)
+	}
+	if trayActions[0] != daemon.ActionAllow || trayActions[1] != daemon.ActionDeny {
+		t.Fatalf("tray actions = %v, want [allow deny]", trayActions)
+	}
+	if !validAction(daemon.ActionReject) {
+		t.Error("reject should still be accepted from -default-action")
+	}
+}
