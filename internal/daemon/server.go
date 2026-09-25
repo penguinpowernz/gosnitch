@@ -1,0 +1,344 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"google.golang.org/grpc"
+
+	"github.com/penguinpowernz/gosnitch/internal/protocol"
+)
+
+// Action and duration values the daemon understands. These strings are part of
+// the wire contract; they match opensnitch's own config.py constants.
+const (
+	ActionAllow  = "allow"
+	ActionDeny   = "deny"
+	ActionReject = "reject"
+
+	DurationOnce         = "once"
+	DurationUntilRestart = "until restart"
+	DurationAlways       = "always"
+)
+
+// Prompter decides what to do with a connection the daemon has no rule for.
+// Returning an error (or a nil Prompter) falls back to the default action.
+type Prompter func(*protocol.Connection) (action, duration string, ok bool)
+
+// Server implements protocol.UIServer. OpenSnitch inverts the usual roles: the
+// UI listens and the daemon connects to it, so this is a server, not a client.
+type Server struct {
+	protocol.UnimplementedUIServer
+
+	store   *Store
+	prompt  Prompter
+	defAct  string
+	defDur  string
+	version string
+
+	mu        sync.RWMutex
+	notify    *notifyStream
+	connected bool
+	daemonVer string
+	lastPing  time.Time
+	onStatus  func()
+}
+
+func NewServer(store *Store, defaultAction, defaultDuration, version string) *Server {
+	if defaultAction == "" {
+		defaultAction = ActionAllow
+	}
+	if defaultDuration == "" {
+		defaultDuration = DurationOnce
+	}
+	return &Server{
+		store:   store,
+		defAct:  defaultAction,
+		defDur:  defaultDuration,
+		version: version,
+	}
+}
+
+// SetPrompter installs the interactive prompt. Safe to call before Serve.
+func (s *Server) SetPrompter(p Prompter) { s.prompt = p }
+
+// OnStatus fires when the daemon connects, disconnects or pings.
+func (s *Server) OnStatus(fn func()) {
+	s.mu.Lock()
+	s.onStatus = fn
+	s.mu.Unlock()
+}
+
+// Status reports whether the daemon is talking to us and which version it is.
+func (s *Server) Status() (connected bool, daemonVersion string, lastPing time.Time) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// The daemon pings every second; treat a longer gap as disconnected.
+	live := s.connected && time.Since(s.lastPing) < 10*time.Second
+	return live, s.daemonVer, s.lastPing
+}
+
+func (s *Server) markSeen(version string) {
+	s.mu.Lock()
+	was := s.connected
+	s.connected = true
+	s.lastPing = time.Now()
+	if version != "" {
+		s.daemonVer = version
+	}
+	fn := s.onStatus
+	changed := !was
+	s.mu.Unlock()
+	if fn != nil && changed {
+		fn()
+	}
+}
+
+// Ping is the daemon's heartbeat; it carries the running statistics with it.
+func (s *Server) Ping(ctx context.Context, req *protocol.PingRequest) (*protocol.PingReply, error) {
+	s.markSeen(req.GetStats().GetDaemonVersion())
+	return &protocol.PingReply{Id: req.GetId()}, nil
+}
+
+// Subscribe is the daemon introducing itself when it first connects.
+func (s *Server) Subscribe(ctx context.Context, cfg *protocol.ClientConfig) (*protocol.ClientConfig, error) {
+	s.markSeen(cfg.GetVersion())
+	log.Printf("daemon subscribed: name=%s version=%s", cfg.GetName(), cfg.GetVersion())
+	return cfg, nil
+}
+
+// AskRule is called when the daemon sees a connection no rule covers. Whatever
+// we return here decides the connection's fate, so it must always answer.
+func (s *Server) AskRule(ctx context.Context, conn *protocol.Connection) (*protocol.Rule, error) {
+	s.markSeen("")
+
+	action, duration := s.defAct, s.defDur
+	if s.prompt != nil {
+		if a, d, ok := s.prompt(conn); ok {
+			action, duration = a, d
+		}
+	}
+
+	s.store.Add(EntryFromConn(conn, action, time.Now()))
+
+	return &protocol.Rule{
+		Name:     ruleName(action, duration, conn),
+		Enabled:  true,
+		Action:   action,
+		Duration: duration,
+		Operator: &protocol.Operator{
+			Type:    "simple",
+			Operand: "process.path",
+			Data:    conn.GetProcessPath(),
+		},
+	}, nil
+}
+
+// notifyStream is the live Notifications stream to the daemon, plus the
+// pending replies we are waiting on.
+type notifyStream struct {
+	send    func(*protocol.Notification) error
+	pending map[uint64]chan *protocol.NotificationReply
+	mu      sync.Mutex
+}
+
+// Notifications is a bidirectional stream. The daemon is the gRPC client here,
+// so we push Notification messages down to it and read its replies back.
+func (s *Server) Notifications(stream protocol.UI_NotificationsServer) error {
+	s.markSeen("")
+
+	ns := &notifyStream{
+		send:    stream.Send,
+		pending: map[uint64]chan *protocol.NotificationReply{},
+	}
+
+	s.mu.Lock()
+	s.notify = ns
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		if s.notify == ns {
+			s.notify = nil
+		}
+		s.mu.Unlock()
+
+		// Release anyone still blocked on a reply.
+		ns.mu.Lock()
+		for id, ch := range ns.pending {
+			close(ch)
+			delete(ns.pending, id)
+		}
+		ns.mu.Unlock()
+	}()
+
+	for {
+		reply, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		ns.mu.Lock()
+		ch, ok := ns.pending[reply.GetId()]
+		if ok {
+			delete(ns.pending, reply.GetId())
+		}
+		ns.mu.Unlock()
+
+		if ok {
+			ch <- reply
+			close(ch)
+		}
+	}
+}
+
+// ErrNoDaemon is returned when a request needs the daemon but it is not
+// currently connected.
+var ErrNoDaemon = errors.New("opensnitchd is not connected")
+
+// DeleteRule asks the daemon to delete a rule by name. The daemon owns the
+// rule files, so this is the only way to remove one without root. It mirrors
+// the Python UI: a Rule carrying just the name, with every other field blank.
+func (s *Server) DeleteRule(ctx context.Context, name string) error {
+	s.mu.RLock()
+	ns := s.notify
+	s.mu.RUnlock()
+
+	if ns == nil {
+		return ErrNoDaemon
+	}
+
+	// The Python UI derives ids from the clock; matching that keeps ids
+	// unique across both clients if they ever run against one daemon.
+	id := uint64(time.Now().UnixNano())
+
+	ch := make(chan *protocol.NotificationReply, 1)
+	ns.mu.Lock()
+	ns.pending[id] = ch
+	ns.mu.Unlock()
+
+	notif := &protocol.Notification{
+		Id:   id,
+		Type: protocol.Action_DELETE_RULE,
+		Rules: []*protocol.Rule{{
+			Name:     name,
+			Enabled:  false,
+			Action:   "",
+			Duration: "",
+			Operator: &protocol.Operator{Type: "", Operand: "", Data: ""},
+		}},
+	}
+
+	if err := ns.send(notif); err != nil {
+		ns.mu.Lock()
+		delete(ns.pending, id)
+		ns.mu.Unlock()
+		return fmt.Errorf("sending delete for %q: %w", name, err)
+	}
+
+	select {
+	case reply, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("daemon disconnected while deleting %q", name)
+		}
+		if reply.GetCode() != protocol.NotificationReplyCode_OK {
+			return fmt.Errorf("daemon refused to delete %q: %s", name, reply.GetData())
+		}
+		return nil
+	case <-ctx.Done():
+		ns.mu.Lock()
+		delete(ns.pending, id)
+		ns.mu.Unlock()
+		return ctx.Err()
+	}
+}
+
+// ruleName mirrors the naming scheme the Python UI uses, so rules written by
+// either client look the same in the rules directory.
+func ruleName(action, duration string, conn *protocol.Connection) string {
+	return slugify(fmt.Sprintf("%s-%s-simple-%s", action, duration, conn.GetProcessPath()))
+}
+
+func slugify(s string) string {
+	var b strings.Builder
+	lastDash := true
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// Listen opens the socket the daemon will connect to. addr uses the daemon's
+// own config syntax, e.g. "unix:///tmp/osui.sock" or "127.0.0.1:50051".
+func Listen(addr string) (net.Listener, error) {
+	network, address := "tcp", addr
+	if u, err := url.Parse(addr); err == nil && u.Scheme == "unix" {
+		network, address = "unix", u.Path
+		// A stale socket from a previous run would block binding.
+		if fi, err := os.Stat(address); err == nil && fi.Mode()&os.ModeSocket != 0 {
+			os.Remove(address)
+		}
+	}
+
+	ln, err := net.Listen(network, address)
+	if err != nil {
+		return nil, err
+	}
+	if network == "unix" {
+		// The daemon runs as root and connects in; the socket must be writable
+		// by it while staying out of other users' reach.
+		os.Chmod(address, 0o770)
+	}
+	return ln, nil
+}
+
+// Serve registers the UI service and blocks until the listener is closed.
+func (s *Server) Serve(ln net.Listener) error {
+	gs := grpc.NewServer(
+		// The daemon can send sizable statistics payloads on Ping.
+		grpc.MaxRecvMsgSize(32 * 1024 * 1024),
+	)
+	protocol.RegisterUIServer(gs, s)
+
+	go func() {
+		// Flip the UI to "disconnected" when pings stop arriving.
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			s.mu.Lock()
+			dropped := s.connected && time.Since(s.lastPing) > 10*time.Second
+			if dropped {
+				s.connected = false
+			}
+			fn := s.onStatus
+			s.mu.Unlock()
+
+			if dropped && fn != nil {
+				fn()
+			}
+		}
+	}()
+
+	return gs.Serve(ln)
+}

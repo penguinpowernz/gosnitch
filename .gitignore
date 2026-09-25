@@ -1,0 +1,4 @@
+/gosnitch
+/mockdaemon
+*.log
+/rulesdump
