@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
@@ -56,7 +57,10 @@ func main() {
 	}()
 
 	// Remove the unix socket on the way out so the next start can bind.
-	cleanup := func() { ln.Close() }
+	// Closing the listener unlinks it. sync.Once because the signal handler
+	// and the deferred call can otherwise both run during a signalled exit.
+	var once sync.Once
+	cleanup := func() { once.Do(func() { ln.Close() }) }
 	defer cleanup()
 
 	sigs := make(chan os.Signal, 1)
