@@ -69,24 +69,27 @@ func newTableView(store *daemon.Store) *tableView {
 	return v
 }
 
+// cellText renders one cell. The process path, destination and protocol come
+// straight off the wire from the process being reported, so each is sanitised
+// before it reaches a label.
 func cellText(e daemon.Entry, col int) string {
 	switch col {
 	case 0:
 		return e.Time.Format("15:04:05")
 	case 1:
-		return e.Action
+		return safeText(e.Action)
 	case 2:
 		// Full path is long and the interesting part is the binary name.
 		if e.Process == "" {
 			return fmt.Sprintf("pid %d", e.PID)
 		}
-		return filepath.Base(e.Process)
+		return safeText(filepath.Base(e.Process))
 	case 3:
-		return e.Dest
+		return safeText(e.Dest)
 	case 4:
 		return strconv.FormatUint(uint64(e.Port), 10)
 	case 5:
-		return e.Proto
+		return safeText(e.Proto)
 	}
 	return ""
 }

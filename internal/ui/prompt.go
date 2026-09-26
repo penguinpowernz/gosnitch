@@ -258,46 +258,66 @@ func promptKeyHandler(dismiss func()) func(*fyne.KeyEvent) {
 	}
 }
 
+// processName is the binary's name, for the headline and the scope toggles.
+// Sanitised: it is attacker-controlled, and filepath.Base happily returns a
+// name that is nothing but a newline.
 func processName(c *protocol.Connection) string {
-	name := filepath.Base(c.GetProcessPath())
-	if name == "" || name == "." || name == "/" {
+	// Test for a useless name on the raw string: once sanitised, a name that
+	// was nothing but a newline is "\uFFFD", which is not blank and would
+	// sail past this check to be shown as the process's name.
+	raw := filepath.Base(c.GetProcessPath())
+	if strings.TrimSpace(raw) == "" || raw == "." || raw == "/" {
+		return fmt.Sprintf("process %d", c.GetProcessId())
+	}
+	name := safeText(raw)
+	if strings.Trim(name, "\uFFFD") == "" {
+		// Nothing left but replacement characters: no name worth showing.
 		return fmt.Sprintf("process %d", c.GetProcessId())
 	}
 	return name
 }
 
 // destLabel is what the destination toggle pins to: the hostname when known,
-// otherwise the IP.
+// otherwise the IP. Sanitised for the same reason as processName.
+//
+// Note this is display text only - the value written into a rule comes from
+// destOperand on the raw connection, so sanitising here cannot weaken a rule.
 func destLabel(c *protocol.Connection) string {
-	if h := c.GetDstHost(); h != "" {
-		return h
+	if h := c.GetDstHost(); strings.TrimSpace(h) != "" {
+		return safeText(h)
 	}
-	return c.GetDstIp()
+	return safeText(c.GetDstIp())
 }
 
 func promptHeadline(c *protocol.Connection) string {
 	dest := destLabel(c)
-	if dest == "" {
+	if strings.TrimSpace(dest) == "" {
 		dest = "an unknown address"
 	}
 	return fmt.Sprintf("%s wants to connect to %s", processName(c), dest)
 }
 
+// promptDetail is the aligned "Field: value" block under the headline. Every
+// value here comes from the process being judged, so each is sanitised: an
+// unescaped newline in any one of them would forge the lines below it.
 func promptDetail(c *protocol.Connection) string {
-	dest := c.GetDstHost()
-	if dest != "" && c.GetDstIp() != "" {
-		dest = fmt.Sprintf("%s (%s)", dest, c.GetDstIp())
-	} else if dest == "" {
-		dest = c.GetDstIp()
+	host, ip := safeText(c.GetDstHost()), safeText(c.GetDstIp())
+	dest := host
+	if host != "" && ip != "" {
+		dest = fmt.Sprintf("%s (%s)", host, ip)
+	} else if host == "" {
+		dest = ip
 	}
 
 	lines := []string{
-		fmt.Sprintf("Path:        %s", c.GetProcessPath()),
-		fmt.Sprintf("Destination: %s:%d  %s", dest, c.GetDstPort(), strings.ToUpper(c.GetProtocol())),
+		fmt.Sprintf("Path:        %s", safeText(c.GetProcessPath())),
+		fmt.Sprintf("Destination: %s:%d  %s", dest, c.GetDstPort(), safeText(strings.ToUpper(c.GetProtocol()))),
 		fmt.Sprintf("PID:         %d      User: %d", c.GetProcessId(), c.GetUserId()),
 	}
 	if args := c.GetProcessArgs(); len(args) > 0 {
-		lines = append(lines, fmt.Sprintf("Command:     %s", strings.Join(args, " ")))
+		// Joined first, then sanitised as one field, so an argument cannot
+		// smuggle a newline in through the join either.
+		lines = append(lines, fmt.Sprintf("Command:     %s", safeText(strings.Join(args, " "))))
 	}
 	return strings.Join(lines, "\n")
 }

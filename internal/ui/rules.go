@@ -89,29 +89,32 @@ func newRulesView(a *App, store *daemon.RuleStore) *rulesView {
 	return v
 }
 
+// ruleCellText renders one cell. Every string field is sanitised: rule files
+// are built from connection data, so a crafted process path or hostname would
+// otherwise put control characters into the table.
 func ruleCellText(r daemon.Rule, col int) string {
 	switch col {
 	case 0:
 		return r.Created.Format("2006-01-02 15:04")
 	case 1:
-		return r.Action
+		return safeText(r.Action)
 	case 2:
-		return r.Duration
+		return safeText(r.Duration)
 	case 3:
 		if r.Process == "" {
 			return "—"
 		}
-		return filepath.Base(r.Process)
+		return safeText(filepath.Base(r.Process))
 	case 4:
 		if r.Dest == "" {
 			return "—"
 		}
-		return r.Dest
+		return safeText(r.Dest)
 	case 5:
 		if r.Port == "" {
 			return "—"
 		}
-		return r.Port
+		return safeText(r.Port)
 	}
 	return ""
 }
@@ -141,7 +144,7 @@ func (v *rulesView) updateStatus() {
 	}
 
 	if v.selected >= 0 && v.selected < len(v.rules) {
-		v.status.Set(fmt.Sprintf("%d rules — selected: %s%s", len(v.rules), v.rules[v.selected].Name, warn))
+		v.status.Set(fmt.Sprintf("%d rules — selected: %s%s", len(v.rules), safeText(v.rules[v.selected].Name), warn))
 		return
 	}
 	v.status.Set(fmt.Sprintf("%d rules — select one to delete%s", len(v.rules), warn))
@@ -159,9 +162,13 @@ func (v *rulesView) confirmDelete() {
 		return
 	}
 
+	// Rule fields come from files the daemon wrote from connection data, so
+	// they are attacker-influenced the same way the prompt's fields are, and
+	// this dialog is laid out the same way. Sanitise before showing.
 	msg := widget.NewLabel(fmt.Sprintf(
 		"%s\n\nAction:      %s %s\nProcess:  %s\n\nThis cannot be undone.",
-		rule.Name, rule.Action, rule.Duration, rule.Process))
+		safeText(rule.Name), safeText(rule.Action), safeText(rule.Duration),
+		safeText(rule.Process)))
 	msg.Wrapping = fyne.TextWrapWord
 
 	d := dialog.NewCustomConfirm("Delete rule?", "Delete", "Cancel", msg, func(ok bool) {
