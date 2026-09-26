@@ -121,20 +121,20 @@ func TestBuildRuleSkipsEmptyDest(t *testing.T) {
 	}
 }
 
-// slugify collapses every run of non-alphanumerics to one dash, so paths that
-// differ only in their separators once produced the same rule name — and the
-// daemon keys rules by name, so one silently replaced the other. A path with
-// no ASCII alphanumerics collapsed to nothing at all.
+// A path that leaves nothing identifying in the slug must still get a
+// distinct name. A CJK-named binary slugs to just its parent directory, so
+// without this every such binary in /usr/bin shares one rule and they
+// overwrite each other.
+//
+// Paths that differ only in which separator they use - foo-bar vs foo_bar -
+// deliberately still collide: see identifying() for why matching the names
+// opensnitchd already has on disk is worth more than closing that case.
 func TestRuleNamesDoNotCollide(t *testing.T) {
 	paths := []string{
-		"/usr/bin/foo-bar",
-		"/usr/bin/foo_bar",
-		"/usr/bin/foo.bar",
 		"/usr/bin/日本",
 		"/usr/bin/中文",
-		"/opt/app/v1.2/bin",
-		"/opt/app/v1-2/bin",
 		"/usr/bin/curl",
+		"/usr/bin/wget",
 	}
 	seen := map[string]string{}
 	for _, p := range paths {

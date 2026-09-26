@@ -157,7 +157,7 @@ func destOperand(conn *protocol.Connection) (operand, data string) {
 func disambiguate(name string, frags []string) string {
 	lossy := name == ""
 	for _, f := range frags {
-		if !lossless(f) {
+		if !identifying(f) {
 			lossy = true
 			break
 		}
@@ -180,45 +180,37 @@ func disambiguate(name string, frags []string) string {
 	return name + "-" + suffix
 }
 
-// lossless reports whether slugify preserved enough of v to identify it.
+// identifying reports whether the slug of v still says which value it came
+// from, which is all a rule name has to do.
 //
-// slugify turns every run of non-alphanumerics into one dash, which loses
-// information two ways: a run longer than one character is indistinguishable
-// from a single separator, and two different separator characters become the
-// same dash. So /usr/bin/foo-bar, foo_bar and foo.bar all reduce alike.
+// slugify keeps [a-z0-9] and turns every run of anything else into one dash,
+// so it is not reversible: /usr/bin/foo-bar and /usr/bin/foo_bar both give
+// "usr-bin-foo-bar". Suffixing everything that cannot be reconstructed was
+// the first thing I tried and it is the wrong bar - opensnitchd already holds
+// rules under the Python UI's names, and on this machine that rule renamed
+// 125 of 267 of them, so gosnitch would write a duplicate beside each rather
+// than update it. Matching the existing scheme is worth more than closing a
+// case that needs two binaries differing only in punctuation, which the
+// Python UI does not close either.
 //
-// A value is recoverable when every separator run is one character long and
-// every one of them is the same character — then the slug plus that single
-// character describes v exactly. In practice this covers what rules are
-// actually built from: "/home/robert/bin/helpmailbot" (only "/"),
-// "hooks.slack.com" (only "."), and bare numbers, which all keep the name the
-// Python UI would write. Mixing separators, as "/usr/bin/foo.bar" does, is
+// What genuinely breaks is a value that leaves nothing of itself behind: a
+// CJK-named binary slugs to just its parent directory, so every such binary
+// in /usr/bin shares one name and the rules overwrite each other. That is
 // what earns a digest.
-func lossless(v string) bool {
-	if slugify(v) == "" {
-		return false
+func identifying(v string) bool {
+	if v == "" {
+		return true // nothing was asked of it
 	}
-	var sep rune // the one separator character seen so far, 0 if none
-	run := 0     // length of the separator run currently being scanned
-	started := false
-	for _, r := range strings.ToLower(v) {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			started = true
-			run = 0
-			continue
-		}
-		if !started {
-			continue // leading separators are trimmed, not merged
-		}
-		run++
-		if run > 1 {
-			return false // a multi-character run collapsed to one dash
-		}
-		if sep == 0 {
-			sep = r
-		} else if r != sep {
-			return false // two different separators became the same dash
-		}
+	slug := slugify(v)
+	if slug == "" {
+		return false // the whole value vanished
 	}
-	return true
+
+	// The last path segment is the part that names the binary. If it did not
+	// survive, the slug points at a directory and every sibling collides.
+	last := v
+	if i := strings.LastIndexByte(v, '/'); i >= 0 {
+		last = v[i+1:]
+	}
+	return last == "" || slugify(last) != ""
 }
