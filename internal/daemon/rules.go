@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -55,6 +56,7 @@ type RuleStore struct {
 	mu       sync.RWMutex
 	rules    []Rule
 	err      error
+	skipped  int // rule files the last Reload could not parse
 	onChange func()
 }
 
@@ -78,6 +80,7 @@ func (r *RuleStore) Reload() error {
 		r.mu.Lock()
 		r.err = err
 		r.rules = nil
+		r.skipped = 0
 		fn := r.onChange
 		r.mu.Unlock()
 		if fn != nil {
@@ -87,6 +90,7 @@ func (r *RuleStore) Reload() error {
 	}
 
 	var out []Rule
+	var skipped int
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -94,7 +98,11 @@ func (r *RuleStore) Reload() error {
 		full := filepath.Join(r.dir, e.Name())
 		rule, err := parseRuleFile(full)
 		if err != nil {
-			// One malformed rule should not hide the other 266.
+			// One malformed rule should not hide the other 266, but dropping
+			// it without a word leaves the table quietly disagreeing with what
+			// the daemon is actually enforcing.
+			log.Printf("skipping unreadable rule %s: %v", full, err)
+			skipped++
 			continue
 		}
 		out = append(out, rule)
@@ -112,6 +120,7 @@ func (r *RuleStore) Reload() error {
 	r.mu.Lock()
 	r.rules = out
 	r.err = nil
+	r.skipped = skipped
 	fn := r.onChange
 	r.mu.Unlock()
 	if fn != nil {
@@ -204,6 +213,14 @@ func (r *RuleStore) Err() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.err
+}
+
+// Skipped reports how many rule files the last Reload could not parse. Those
+// rules are still in force in the daemon; they are just not shown.
+func (r *RuleStore) Skipped() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.skipped
 }
 
 // Remove drops a rule from the local list. The daemon owns the file, so this

@@ -131,11 +131,20 @@ func (v *rulesView) updateStatus() {
 		v.status.Set(fmt.Sprintf("Cannot read rules: %v", err))
 		return
 	}
+	// Unparseable rules are still enforced by the daemon, so say so rather
+	// than letting the table imply they do not exist.
+	var warn string
+	if n := v.store.Skipped(); n == 1 {
+		warn = " — 1 rule unreadable"
+	} else if n > 1 {
+		warn = fmt.Sprintf(" — %d rules unreadable", n)
+	}
+
 	if v.selected >= 0 && v.selected < len(v.rules) {
-		v.status.Set(fmt.Sprintf("%d rules — selected: %s", len(v.rules), v.rules[v.selected].Name))
+		v.status.Set(fmt.Sprintf("%d rules — selected: %s%s", len(v.rules), v.rules[v.selected].Name, warn))
 		return
 	}
-	v.status.Set(fmt.Sprintf("%d rules — select one to delete", len(v.rules)))
+	v.status.Set(fmt.Sprintf("%d rules — select one to delete%s", len(v.rules), warn))
 }
 
 // confirmDelete asks before removing, because deletion cannot be undone.
