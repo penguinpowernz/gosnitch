@@ -45,6 +45,9 @@ type Server struct {
 	defDur  string
 	version string
 
+	idMu   sync.Mutex
+	lastID uint64
+
 	mu        sync.RWMutex
 	notify    *notifyStream
 	connected bool
@@ -81,8 +84,13 @@ func (s *Server) SetDefaults(action, duration string) {
 	s.mu.Unlock()
 }
 
-// SetPrompter installs the interactive prompt. Safe to call before Serve.
-func (s *Server) SetPrompter(p Prompter) { s.prompt = p }
+// SetPrompter installs the interactive prompt. Safe to call while serving:
+// AskRule reads it under the same lock.
+func (s *Server) SetPrompter(p Prompter) {
+	s.mu.Lock()
+	s.prompt = p
+	s.mu.Unlock()
+}
 
 // OnStatus fires when the daemon connects, disconnects or pings.
 func (s *Server) OnStatus(fn func()) {
@@ -95,14 +103,26 @@ func (s *Server) OnStatus(fn func()) {
 func (s *Server) Status() (connected bool, daemonVersion string, lastPing time.Time) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// The daemon pings every second; treat a longer gap as disconnected.
-	live := s.connected && time.Since(s.lastPing) < 10*time.Second
-	return live, s.daemonVer, s.lastPing
+	return s.liveLocked(), s.daemonVer, s.lastPing
+}
+
+// staleAfter is how long a silence makes the daemon count as gone. It pings
+// every second, so this is a generous margin.
+const staleAfter = 10 * time.Second
+
+// liveLocked reports whether the daemon counts as connected right now. Both
+// Status and markSeen go through this: when they disagreed, a daemon that
+// returned during the watchdog's 5s gap left the UI stuck on "waiting",
+// because markSeen saw the raw flag still set and decided nothing had changed.
+//
+// Callers must hold s.mu (read or write).
+func (s *Server) liveLocked() bool {
+	return s.connected && time.Since(s.lastPing) < staleAfter
 }
 
 func (s *Server) markSeen(version string) {
 	s.mu.Lock()
-	was := s.connected
+	was := s.liveLocked()
 	s.connected = true
 	s.lastPing = time.Now()
 	if version != "" {
@@ -136,9 +156,12 @@ func (s *Server) AskRule(ctx context.Context, conn *protocol.Connection) (*proto
 
 	s.mu.RLock()
 	d := Decision{Action: s.defAct, Duration: s.defDur}
+	prompt := s.prompt
 	s.mu.RUnlock()
-	if s.prompt != nil {
-		if answer, ok := s.prompt(conn); ok {
+	// Called without the lock: the prompt blocks on the user, and holding
+	// s.mu across that would stall every ping and status read behind it.
+	if prompt != nil {
+		if answer, ok := prompt(conn); ok {
 			d = answer
 		}
 	}
@@ -154,6 +177,18 @@ type notifyStream struct {
 	send    func(*protocol.Notification) error
 	pending map[uint64]chan *protocol.NotificationReply
 	mu      sync.Mutex
+
+	// gRPC forbids concurrent SendMsg on one stream, and two overlapping
+	// DeleteRule calls would do exactly that. This is separate from mu so a
+	// network write never blocks dispatching a reply that has already arrived.
+	sendMu sync.Mutex
+}
+
+// sendNotification serialises writes to the stream.
+func (ns *notifyStream) sendNotification(n *protocol.Notification) error {
+	ns.sendMu.Lock()
+	defer ns.sendMu.Unlock()
+	return ns.send(n)
 }
 
 // Notifications is a bidirectional stream. The daemon is the gRPC client here,
@@ -209,6 +244,26 @@ func (s *Server) Notifications(stream protocol.UI_NotificationsServer) error {
 	}
 }
 
+// nextNotificationID returns an id no in-flight notification is using.
+//
+// The Python UI derives ids from the clock, and matching that keeps ids from
+// colliding across both clients if they ever run against one daemon. The clock
+// alone is not enough on our side though: two DeleteRule calls in the same
+// nanosecond produced the same id, and the second overwrote the first's entry
+// in pending, leaving the first caller blocked until its context expired. The
+// counter only ever bumps the id past one already handed out, so ids stay
+// clock-ordered and stay unique.
+func (s *Server) nextNotificationID() uint64 {
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	id := uint64(time.Now().UnixNano())
+	if id <= s.lastID {
+		id = s.lastID + 1
+	}
+	s.lastID = id
+	return id
+}
+
 // ErrNoDaemon is returned when a request needs the daemon but it is not
 // currently connected.
 var ErrNoDaemon = errors.New("opensnitchd is not connected")
@@ -225,9 +280,7 @@ func (s *Server) DeleteRule(ctx context.Context, name string) error {
 		return ErrNoDaemon
 	}
 
-	// The Python UI derives ids from the clock; matching that keeps ids
-	// unique across both clients if they ever run against one daemon.
-	id := uint64(time.Now().UnixNano())
+	id := s.nextNotificationID()
 
 	ch := make(chan *protocol.NotificationReply, 1)
 	ns.mu.Lock()
@@ -246,7 +299,7 @@ func (s *Server) DeleteRule(ctx context.Context, name string) error {
 		}},
 	}
 
-	if err := ns.send(notif); err != nil {
+	if err := ns.sendNotification(notif); err != nil {
 		ns.mu.Lock()
 		delete(ns.pending, id)
 		ns.mu.Unlock()
@@ -306,8 +359,13 @@ func Listen(addr string) (net.Listener, error) {
 	}
 	if network == "unix" {
 		// The daemon runs as root and connects in; the socket must be writable
-		// by it while staying out of other users' reach.
-		os.Chmod(address, 0o770)
+		// by it while staying out of other users' reach. If this fails the
+		// socket keeps Go's default 0777, which is wider than intended, so
+		// fail rather than quietly listening on a world-writable socket.
+		if err := os.Chmod(address, 0o770); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("securing %s: %w", address, err)
+		}
 	}
 	return ln, nil
 }
@@ -326,7 +384,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		defer t.Stop()
 		for range t.C {
 			s.mu.Lock()
-			dropped := s.connected && time.Since(s.lastPing) > 10*time.Second
+			dropped := s.connected && time.Since(s.lastPing) > staleAfter
 			if dropped {
 				s.connected = false
 			}
