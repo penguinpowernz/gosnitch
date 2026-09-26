@@ -1,0 +1,16 @@
+Package: gosnitch
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Robert McLeod <robert@penguinpower.co.nz>
+Essential: no
+Homepage: https://github.com/penguinpowernz/gosnitch
+Installed-Size: 37475
+Depends: libc6, libgl1, libx11-6, libxcb1, libwayland-client0, libffi8
+Conflicts: opensnitch-ui
+Description: Fyne system tray UI for the OpenSnitch application firewall
+  gosnitch is a lightweight tray client for opensnitchd, offering a simpler
+  alternative to the stock Python UI. It shows connection events in one plain
+  table, lists and deletes rules, and prompts on unmatched connections with a
+  button-only dialog designed to be answered without careful aiming.

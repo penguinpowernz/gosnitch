@@ -1,7 +1,7 @@
 CGO_ENABLED := 1
 export CGO_ENABLED
 
-.PHONY: all build mock rulesdump test vet fmt clean run-dev
+.PHONY: all build mock rulesdump test vet fmt clean run-dev deb
 
 all: build
 
@@ -24,7 +24,14 @@ fmt:
 	gofmt -l -w .
 
 clean:
-	rm -f gosnitch mockdaemon rulesdump
+	rm -f gosnitch mockdaemon rulesdump usr/bin/gosnitch
+	rm -rf pkg
+
+# Build the .deb into pkg/ via ian. The binary must land in the install tree
+# first; ian packages what the working tree holds, minus .ianignore.
+deb:
+	go build -o usr/bin/gosnitch ./cmd/gosnitch
+	ian pkg
 
 # Run the UI and a fake daemon against a throwaway socket.
 run-dev: build mock

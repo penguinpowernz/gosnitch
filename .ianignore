@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+cmd
+internal
+proto
+go.mod
+go.sum
+Makefile
+README.md
+/gosnitch
+/mockdaemon
+/rulesdump
+pkg
+*.log

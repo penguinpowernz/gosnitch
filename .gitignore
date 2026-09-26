@@ -2,3 +2,5 @@
 /mockdaemon
 *.log
 /rulesdump
+/pkg
+/usr/bin/gosnitch

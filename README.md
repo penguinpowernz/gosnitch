@@ -31,6 +31,27 @@ sudo apt install golang gcc libgl1-mesa-dev xorg-dev
 CGO_ENABLED=1 go build -o gosnitch ./cmd/gosnitch
 ```
 
+## Packaging
+
+The repo is a Debian package, managed with [go-ian](https://github.com/penguinpowernz/go-ian):
+
+```sh
+make deb        # builds usr/bin/gosnitch, then runs ian pkg
+```
+
+The `.deb` lands in `pkg/`. Install it with `sudo dpkg -i pkg/gosnitch_*.deb`.
+
+`ian` packages the whole working tree minus `.ianignore`, so the install tree
+lives in the repo as `usr/` and `etc/`: the binary at `/usr/bin/gosnitch`, a
+menu entry, and an autostart entry that launches `gosnitch -hidden` at login.
+Source directories are listed in `.ianignore` to keep them out of the package.
+
+Bump the version with `ian set -v 1.2.3` before building; edit `DEBIAN/control`
+directly for fields `ian set` does not cover.
+
+The package `Conflicts` with `opensnitch-ui`, since only one UI can bind the
+daemon socket.
+
 ## Running
 
 Only one UI can own the socket, so stop the Python one first:

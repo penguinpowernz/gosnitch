@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+
+# Only one UI can own the daemon's socket, so say so rather than letting
+# gosnitch fail to bind at next login.
+if command -v systemctl >/dev/null 2>&1 && \
+   systemctl --global is-enabled opensnitch-ui.service >/dev/null 2>&1; then
+    echo "gosnitch: the Python opensnitch-ui is still enabled." >&2
+    echo "gosnitch: only one UI can bind the daemon socket - disable it with:" >&2
+    echo "gosnitch:   systemctl --user disable --now opensnitch-ui" >&2
+fi
+
+exit 0

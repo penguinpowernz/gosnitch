@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=gosnitch
+Comment=Tray UI for the OpenSnitch application firewall
+Exec=/usr/bin/gosnitch -hidden
+Icon=security-high
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

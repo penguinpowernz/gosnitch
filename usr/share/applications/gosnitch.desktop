@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=gosnitch
+GenericName=Application Firewall UI
+Comment=Tray UI for the OpenSnitch application firewall
+Exec=/usr/bin/gosnitch
+Icon=security-high
+Terminal=false
+Categories=System;Security;
+Keywords=firewall;opensnitch;network;
+StartupNotify=false
