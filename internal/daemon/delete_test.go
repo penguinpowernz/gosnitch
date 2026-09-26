@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/penguinpowernz/gosnitch/internal/protocol"
@@ -33,6 +34,18 @@ func startServer(t *testing.T) (*Server, protocol.UIClient) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cc.Close() })
+
+	// grpc.NewClient is lazy, so without this the first RPC carries the cost
+	// of dialling and can time out on a loaded machine while the test blames
+	// whatever it was actually testing. Connect up front and wait for it.
+	cc.Connect()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for cc.GetState() != connectivity.Ready {
+		if !cc.WaitForStateChange(ctx, cc.GetState()) {
+			t.Fatalf("client never became ready: %v", ctx.Err())
+		}
+	}
 	return s, protocol.NewUIClient(cc)
 }
 

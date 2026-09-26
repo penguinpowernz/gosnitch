@@ -24,7 +24,7 @@ func TestIdleStreamSurvives(t *testing.T) {
 	gs := grpc.NewServer(
 		grpc.MaxConcurrentStreams(maxConcurrentStreams),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle: 1 * time.Second, // shrunk for the test
+			MaxConnectionIdle: 300 * time.Millisecond, // shrunk for the test
 			Time:              20 * time.Second,
 			Timeout:           10 * time.Second,
 		}),
@@ -44,7 +44,7 @@ func TestIdleStreamSurvives(t *testing.T) {
 	waitForStream(t, s)
 
 	// Well past MaxConnectionIdle with no traffic at all.
-	time.Sleep(3 * time.Second)
+	time.Sleep(time.Second)
 
 	// The stream must still be usable: a delete has to reach the daemon.
 	go func() {
