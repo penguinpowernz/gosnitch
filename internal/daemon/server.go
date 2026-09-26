@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/penguinpowernz/gosnitch/internal/protocol"
 )
@@ -264,6 +265,15 @@ func (s *Server) nextNotificationID() uint64 {
 	return id
 }
 
+// Limits on what one peer can make the UI do. The socket is reachable by every
+// process running as this user, not only opensnitchd, so these bound the work
+// an unprivileged local process can queue up. They are deliberately well clear
+// of what a real daemon needs.
+const (
+	maxRecvMsgSize       = 32 * 1024 * 1024
+	maxConcurrentStreams = 16
+)
+
 // ErrNoDaemon is returned when a request needs the daemon but it is not
 // currently connected.
 var ErrNoDaemon = errors.New("opensnitchd is not connected")
@@ -373,8 +383,32 @@ func Listen(addr string) (net.Listener, error) {
 // Serve registers the UI service and blocks until the listener is closed.
 func (s *Server) Serve(ln net.Listener) error {
 	gs := grpc.NewServer(
-		// The daemon can send sizable statistics payloads on Ping.
-		grpc.MaxRecvMsgSize(32 * 1024 * 1024),
+		// The daemon can send sizable statistics payloads on Ping: Statistics
+		// carries six unbounded maps and an event list, so this ceiling stays
+		// generous. It is a ceiling, not an expectation.
+		grpc.MaxRecvMsgSize(maxRecvMsgSize),
+
+		// One daemon connects, and it opens one Notifications stream plus the
+		// occasional unary call. Anything beyond this is not a daemon doing
+		// its job, and the socket is reachable by every process running as
+		// this user, so cap the work one peer can queue up.
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
+
+		// Drop peers that open a connection and then sit on it. Without this a
+		// process can hold connections open indefinitely and never speak.
+		grpc.ConnectionTimeout(15*time.Second),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			// The daemon pings every second, so an idle minute means it is
+			// gone, not busy.
+			MaxConnectionIdle: 60 * time.Second,
+			Time:              20 * time.Second,
+			Timeout:           10 * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			// Do not let a peer burn CPU with a keepalive flood.
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: false,
+		}),
 	)
 	protocol.RegisterUIServer(gs, s)
 
