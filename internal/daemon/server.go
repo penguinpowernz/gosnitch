@@ -351,33 +351,75 @@ func slugify(s string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// maxUnixPath is the usable length of sockaddr_un.sun_path on Linux: 108
+// bytes including the NUL terminator. Binding a longer path fails with a bare
+// "invalid argument", so check it ourselves and say what is actually wrong.
+const maxUnixPath = 107
+
 // Listen opens the socket the daemon will connect to. addr uses the daemon's
 // own config syntax, e.g. "unix:///tmp/osui.sock" or "127.0.0.1:50051".
+//
+// The unix path is the interesting case. opensnitchd ships
+// "unix:///tmp/osui.sock" in its default-config.json, so that is where the
+// daemon looks and gosnitch cannot move it without the user editing the
+// daemon's config too. /tmp is world-writable, which makes two things matter:
+// the socket must never be reachable by anyone but us and the daemon, not
+// even briefly, and a path someone else already owns must not be trusted.
 func Listen(addr string) (net.Listener, error) {
 	network, address := "tcp", addr
 	if u, err := url.Parse(addr); err == nil && u.Scheme == "unix" {
+		if u.Path == "" {
+			return nil, fmt.Errorf("invalid unix address %q: no path (use unix:///path/to.sock)", addr)
+		}
+		if u.Host != "" {
+			// "unix://foo.sock" parses foo.sock as a host, not a path, and
+			// would otherwise silently bind an empty path.
+			return nil, fmt.Errorf("invalid unix address %q: expected three slashes, as unix:///%s%s", addr, u.Host, u.Path)
+		}
 		network, address = "unix", u.Path
-		// A stale socket from a previous run would block binding.
-		if fi, err := os.Stat(address); err == nil && fi.Mode()&os.ModeSocket != 0 {
-			os.Remove(address)
+		if len(address) > maxUnixPath {
+			return nil, fmt.Errorf("socket path %q is %d bytes; the kernel allows %d", address, len(address), maxUnixPath)
+		}
+		if err := clearStaleSocket(address); err != nil {
+			return nil, err
 		}
 	}
 
-	ln, err := net.Listen(network, address)
+	ln, err := listenSecurely(network, address)
 	if err != nil {
 		return nil, err
 	}
-	if network == "unix" {
-		// The daemon runs as root and connects in; the socket must be writable
-		// by it while staying out of other users' reach. If this fails the
-		// socket keeps Go's default 0777, which is wider than intended, so
-		// fail rather than quietly listening on a world-writable socket.
-		if err := os.Chmod(address, 0o770); err != nil {
-			ln.Close()
-			return nil, fmt.Errorf("securing %s: %w", address, err)
-		}
-	}
 	return ln, nil
+}
+
+// clearStaleSocket removes a socket left behind by a previous run.
+//
+// It removes only a socket we own. /tmp is world-writable, so another user
+// can plant a file at our path: if that were a socket we unlinked and replaced
+// we would be doing their cleanup for them, and if it were something else
+// net.Listen would fail with a confusing error. Ownership is the check that
+// matters, because the sticky bit on /tmp already stops them removing ours.
+func clearStaleSocket(path string) error {
+	fi, err := os.Lstat(path) // Lstat: do not follow a symlink someone planted
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking %s: %w", path, err)
+	}
+
+	if fi.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("%s exists and is not a socket; refusing to remove it", path)
+	}
+
+	if ours, uid := ownedByUs(fi); !ours {
+		return fmt.Errorf("%s is owned by uid %d, not by us; refusing to remove it", path, uid)
+	}
+
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("removing stale socket %s: %w", path, err)
+	}
+	return nil
 }
 
 // Serve registers the UI service and blocks until the listener is closed.
