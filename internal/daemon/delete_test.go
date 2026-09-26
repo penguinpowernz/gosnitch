@@ -3,7 +3,9 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,7 +39,7 @@ func startServer(t *testing.T) (*Server, protocol.UIClient) {
 // The daemon side of the Notifications stream: echo back the given code.
 func runFakeDaemon(t *testing.T, c protocol.UIClient, code protocol.NotificationReplyCode, data string) chan *protocol.Notification {
 	t.Helper()
-	got := make(chan *protocol.Notification, 4)
+	got := make(chan *protocol.Notification, 64)
 	stream, err := c.Notifications(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -158,4 +160,47 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// gRPC forbids concurrent SendMsg on one stream. Overlapping deletes used to
+// call stream.Send unsynchronised; under -race this trips the detector, and in
+// production it corrupts the stream.
+func TestConcurrentDeleteRule(t *testing.T) {
+	s, c := startServer(t)
+	got := runFakeDaemon(t, c, protocol.NotificationReplyCode_OK, "")
+	waitForStream(t, s)
+
+	const n = 16
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			errs <- s.DeleteRule(ctx, fmt.Sprintf("rule-%d", i))
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("DeleteRule: %v", err)
+		}
+	}
+
+	// Every delete must have reached the daemon exactly once.
+	names := map[string]bool{}
+	for range n {
+		select {
+		case notif := <-got:
+			names[notif.GetRules()[0].GetName()] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d notifications arrived", len(names), n)
+		}
+	}
+	if len(names) != n {
+		t.Errorf("got %d distinct notifications, want %d", len(names), n)
+	}
 }
