@@ -31,10 +31,31 @@ type promptResult struct {
 	ok       bool
 }
 
+// maxPendingPrompts caps how many connections may be waiting for a prompt.
+//
+// Past this, ask declines immediately and the caller applies the default
+// action. A burst of unmatched connections is exactly when the user is least
+// able to work through a backlog, and a queue longer than this would take
+// longer to clear than the daemon is willing to wait anyway.
+const maxPendingPrompts = 8
+
 // ask shows the prompt for conn and blocks until the user answers or the
 // timeout elapses. It is called from a gRPC goroutine, so all widget work is
 // marshalled onto the Fyne goroutine.
+//
+// Prompts are shown one at a time. Without this a burst of unmatched
+// connections opened one stacked window per connection, each with its own
+// timeout, which is unanswerable and hides how many decisions are pending.
 func (a *App) ask(conn *protocol.Connection) (daemon.Decision, bool) {
+	if a.pending.Add(1) > maxPendingPrompts {
+		a.pending.Add(-1)
+		return daemon.Decision{}, false // caller applies the default
+	}
+	defer a.pending.Add(-1)
+
+	a.promptMu.Lock()
+	defer a.promptMu.Unlock()
+
 	// Buffered so a timeout never leaks the answering goroutine.
 	res := make(chan promptResult, 1)
 

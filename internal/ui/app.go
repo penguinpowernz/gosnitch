@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -47,6 +49,12 @@ type App struct {
 	defaultAction string
 	promptTimeout time.Duration
 	interactive   bool
+
+	// Prompts are shown one at a time; pending counts those waiting their
+	// turn, including the one on screen, so a burst can be shed rather than
+	// queued past the point of usefulness. See App.ask.
+	promptMu sync.Mutex
+	pending  atomic.Int32
 
 	shown bool
 }
