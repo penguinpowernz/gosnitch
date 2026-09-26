@@ -120,3 +120,57 @@ func TestBuildRuleSkipsEmptyDest(t *testing.T) {
 		}
 	}
 }
+
+// slugify collapses every run of non-alphanumerics to one dash, so paths that
+// differ only in their separators once produced the same rule name — and the
+// daemon keys rules by name, so one silently replaced the other. A path with
+// no ASCII alphanumerics collapsed to nothing at all.
+func TestRuleNamesDoNotCollide(t *testing.T) {
+	paths := []string{
+		"/usr/bin/foo-bar",
+		"/usr/bin/foo_bar",
+		"/usr/bin/foo.bar",
+		"/usr/bin/日本",
+		"/usr/bin/中文",
+		"/opt/app/v1.2/bin",
+		"/opt/app/v1-2/bin",
+		"/usr/bin/curl",
+	}
+	seen := map[string]string{}
+	for _, p := range paths {
+		name := BuildRule(&protocol.Connection{ProcessPath: p},
+			Decision{Action: ActionAllow, Duration: DurationAlways}).GetName()
+		if name == "" {
+			t.Errorf("%s: empty rule name", p)
+		}
+		if prev, dup := seen[name]; dup {
+			t.Errorf("%s and %s both produced rule name %q", prev, p, name)
+		}
+		seen[name] = p
+	}
+}
+
+// Ordinary paths must keep the exact name the Python UI would produce, so
+// equivalent rules from either client still collide by name on purpose.
+func TestOrdinaryRuleNamesUnchanged(t *testing.T) {
+	for _, p := range []string{"/usr/bin/curl", "/bin/sh", "/usr/lib/firefox/firefox"} {
+		got := BuildRule(&protocol.Connection{ProcessPath: p},
+			Decision{Action: ActionAllow, Duration: DurationAlways}).GetName()
+		want := slugify("allow-always-simple-" + p)
+		if got != want {
+			t.Errorf("%s: got %q, want the unsuffixed %q", p, got, want)
+		}
+	}
+}
+
+// The same connection and decision must always name the same rule, otherwise
+// re-answering a prompt piles up duplicates instead of replacing.
+func TestRuleNameStable(t *testing.T) {
+	conn := &protocol.Connection{
+		ProcessPath: "/usr/bin/foo.bar", DstHost: "example.com", DstPort: 443, UserId: 1000,
+	}
+	d := Decision{Action: ActionAllow, Duration: DurationAlways, Scope: Scope{Dest: true, Port: true}}
+	if a, b := BuildRule(conn, d).GetName(), BuildRule(conn, d).GetName(); a != b {
+		t.Errorf("unstable rule name: %q then %q", a, b)
+	}
+}
