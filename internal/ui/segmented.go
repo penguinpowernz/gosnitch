@@ -52,14 +52,22 @@ func (s *segmented) selectIndex(i int) {
 	}
 }
 
-// paint marks the selected button. Importance is the only styling hook a plain
-// Button exposes, so selection reads as a filled button against outlined ones.
+// How a chosen option is distinguished from an unchosen one. Importance is
+// the only styling hook a plain Button exposes, so selection reads as a
+// filled button against outlined ones. Shared by both rows of the prompt so
+// they stay the same colour as each other.
+const (
+	selectedImportance   = widget.HighImportance
+	unselectedImportance = widget.MediumImportance
+)
+
+// paint marks the selected button.
 func (s *segmented) paint() {
 	for i, b := range s.buttons {
 		if i == s.selected {
-			b.Importance = widget.HighImportance
+			b.Importance = selectedImportance
 		} else {
-			b.Importance = widget.MediumImportance
+			b.Importance = unselectedImportance
 		}
 		b.Refresh()
 	}
@@ -113,7 +121,8 @@ const maxToggleLabel = 28
 
 func newToggle(label string, on bool, onChange func()) *toggle {
 	t := &toggle{label: elide(label, maxToggleLabel), on: on}
-	t.button = widget.NewButton(label, func() {
+	// No text here: paint sets it, prefixed with the tick or its spacer.
+	t.button = widget.NewButton("", func() {
 		t.on = !t.on
 		t.paint()
 		if onChange != nil {
@@ -124,12 +133,16 @@ func newToggle(label string, on bool, onChange func()) *toggle {
 	return t
 }
 
+// paint marks the toggle on or off, using the same two importances as
+// segmented.paint. Both rows are the same kind of control - pick an option,
+// see it filled in - so a different unselected colour for each read as a
+// difference in meaning rather than in kind.
 func (t *toggle) paint() {
 	if t.on {
-		t.button.Importance = widget.HighImportance
+		t.button.Importance = selectedImportance
 		t.button.SetText("✓ " + t.label)
 	} else {
-		t.button.Importance = widget.LowImportance
+		t.button.Importance = unselectedImportance
 		t.button.SetText("   " + t.label)
 	}
 	t.button.Refresh()

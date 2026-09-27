@@ -126,3 +126,53 @@ func testButtons() promptParts {
 		allow:    widget.NewButton("Allow (60)", nil),
 	}
 }
+
+// The duration buttons and the scope toggles are the same kind of control -
+// pick an option, see it filled in - so they must use the same two colours.
+// They drifted apart once: the toggles used LowImportance when off while the
+// duration buttons used MediumImportance, so the two rows looked unrelated.
+func TestPromptButtonsShareTheirColours(t *testing.T) {
+	seg := newSegmented(durationOptions, FallbackDuration, nil)
+	on := newToggle("example.com", true, nil)
+	off := newToggle("example.com", false, nil)
+
+	var segSelected, segUnselected widget.Importance
+	for i, b := range seg.buttons {
+		if i == seg.selected {
+			segSelected = b.Importance
+		} else {
+			segUnselected = b.Importance
+		}
+	}
+
+	if on.button.Importance != segSelected {
+		t.Errorf("selected: toggle uses %v, duration button uses %v",
+			on.button.Importance, segSelected)
+	}
+	if off.button.Importance != segUnselected {
+		t.Errorf("unselected: toggle uses %v, duration button uses %v",
+			off.button.Importance, segUnselected)
+	}
+
+	// And the two states must still be distinguishable from each other.
+	if segSelected == segUnselected {
+		t.Error("selected and unselected look the same")
+	}
+}
+
+// Toggling must move the button between those same two colours, not leave it
+// on whichever it started with.
+func TestToggleRepaintsOnChange(t *testing.T) {
+	tg := newToggle("example.com", false, nil)
+	if got := tg.button.Importance; got != unselectedImportance {
+		t.Fatalf("starts at %v, want %v", got, unselectedImportance)
+	}
+	tg.button.OnTapped()
+	if got := tg.button.Importance; got != selectedImportance {
+		t.Errorf("after tap %v, want %v", got, selectedImportance)
+	}
+	tg.button.OnTapped()
+	if got := tg.button.Importance; got != unselectedImportance {
+		t.Errorf("after second tap %v, want %v", got, unselectedImportance)
+	}
+}
