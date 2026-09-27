@@ -8,6 +8,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/penguinpowernz/gosnitch/internal/daemon"
@@ -39,6 +40,19 @@ type promptResult struct {
 // longer to clear than the daemon is willing to wait anyway.
 const maxPendingPrompts = 8
 
+// The prompt's size. Content must fit inside this: a window cannot be smaller
+// than its content's MinSize, so anything that lets connection text set the
+// width makes the window grow past what it draws, leaving a strip of desktop
+// beside it. TestPromptContentFitsItsWindow holds the line.
+// The height covers the tallest the content gets: a long command line wraps
+// to several lines in the detail rows. It was 420, which put the Allow and
+// Deny buttons below the fold on an ordinary connection - the window opened
+// too small for its own content rather than too large.
+const (
+	promptWidth  = 620
+	promptHeight = 500
+)
+
 // ask shows the prompt for conn and blocks until the user answers or the
 // timeout elapses. It is called from a gRPC goroutine, so all widget work is
 // marshalled onto the Fyne goroutine.
@@ -67,7 +81,7 @@ func (a *App) ask(conn *protocol.Connection) (daemon.Decision, bool) {
 
 func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 	win := a.fyne.NewWindow("OpenSnitch")
-	win.Resize(fyne.NewSize(620, 420))
+	win.Resize(fyne.NewSize(promptWidth, promptHeight))
 	win.CenterOnScreen()
 
 	// stopCountdown is filled in once the buttons exist. Touching any control
@@ -169,21 +183,14 @@ func (a *App) buildPrompt(conn *protocol.Connection, res chan promptResult) {
 		deny.SetText("Deny")
 	}
 
-	win.SetContent(container.NewVBox(
-		widget.NewLabelWithStyle(promptHeadline(conn), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(promptDetail(conn)),
-		widget.NewSeparator(),
-
-		widget.NewLabelWithStyle("For how long", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		dur.content(),
-
-		widget.NewLabelWithStyle("Apply to", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("Always limited to "+processName(conn)+". Narrow it further:"),
-		container.NewGridWithColumns(3, destToggle.button, portToggle.button, userToggle.button),
-
-		widget.NewSeparator(),
-		container.NewGridWithColumns(2, deny, allow),
-	))
+	win.SetContent(promptContent(conn, promptParts{
+		duration: dur,
+		dest:     destToggle,
+		port:     portToggle,
+		user:     userToggle,
+		deny:     deny,
+		allow:    allow,
+	}))
 
 	win.Show()
 
@@ -295,6 +302,110 @@ func promptHeadline(c *protocol.Connection) string {
 		dest = "an unknown address"
 	}
 	return fmt.Sprintf("%s wants to connect to %s", processName(c), dest)
+}
+
+// promptParts are the interactive widgets promptContent arranges. They are
+// built by buildPrompt, which owns their behaviour; this only lays them out.
+type promptParts struct {
+	duration *segmented
+	dest     *toggle
+	port     *toggle
+	user     *toggle
+	deny     *widget.Button
+	allow    *widget.Button
+}
+
+// promptContent builds the prompt's layout. Split out from buildPrompt so the
+// layout can be measured in a test without opening a window.
+//
+// Every label holding connection text wraps. An unwrapped label reports a
+// MinSize as wide as its longest line, and a window cannot be smaller than
+// its content's MinSize, so one long path or command line stretched the
+// prompt wider than the content it was showing.
+func promptContent(conn *protocol.Connection, p promptParts) fyne.CanvasObject {
+	headline := widget.NewLabelWithStyle(promptHeadline(conn), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	headline.Wrapping = fyne.TextWrapWord
+
+	scopeHint := widget.NewLabel("Always limited to " + processName(conn) + ". Narrow it further:")
+	scopeHint.Wrapping = fyne.TextWrapWord
+
+	return container.NewVBox(
+		headline,
+		detailGrid(conn),
+		widget.NewSeparator(),
+
+		widget.NewLabelWithStyle("For how long", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		p.duration.content(),
+
+		widget.NewLabelWithStyle("Apply to", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		scopeHint,
+		scopeRow(p.dest, p.port, p.user),
+
+		widget.NewSeparator(),
+		container.NewGridWithColumns(2, p.deny, p.allow),
+	)
+}
+
+// scopeRow lays the three scope toggles out side by side.
+//
+// GridWithColumns gives every cell the width of the widest, so the dest
+// toggle - the only one carrying a variable-length value - decided the width
+// of all three and, through them, of the window. HBox lets each button take
+// its own width instead, and the dest label is elided, so a long hostname no
+// longer stretches the prompt.
+func scopeRow(toggles ...*toggle) fyne.CanvasObject {
+	objs := make([]fyne.CanvasObject, len(toggles))
+	for i, t := range toggles {
+		objs[i] = t.button
+	}
+	return container.NewHBox(objs...)
+}
+
+// detailGrid lays the connection details out as a label column and a value
+// column. Only the values wrap, so the field names stay aligned however long
+// a path or command line is.
+func detailGrid(c *protocol.Connection) fyne.CanvasObject {
+	rows := detailRows(c)
+	objs := make([]fyne.CanvasObject, 0, len(rows)*2)
+	for _, r := range rows {
+		name := widget.NewLabelWithStyle(r[0], fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
+		value := widget.NewLabel(r[1])
+		value.Wrapping = fyne.TextWrapWord
+		objs = append(objs, name, value)
+	}
+	// A two-column form: the name column takes its natural width and the
+	// value column gets the rest, which is what lets the values wrap.
+	return container.New(layout.NewFormLayout(), objs...)
+}
+
+// detailRows is the connection broken into label/value pairs for the prompt.
+//
+// These used to be one label of space-padded lines, which set the prompt's
+// width: an unwrapped label reports a MinSize wide enough for its longest
+// line, so a long command line made the window wider than its own content and
+// left a strip of desktop showing beside it. A real Claude invocation wanted
+// 872px against a 620px window. Laid out as rows, only the value column has
+// to flex, and it can wrap.
+func detailRows(c *protocol.Connection) [][2]string {
+	host, ip := safeText(c.GetDstHost()), safeText(c.GetDstIp())
+	dest := host
+	if host != "" && ip != "" {
+		dest = fmt.Sprintf("%s (%s)", host, ip)
+	} else if host == "" {
+		dest = ip
+	}
+
+	rows := [][2]string{
+		{"Path", safeText(c.GetProcessPath())},
+		{"Destination", fmt.Sprintf("%s:%d  %s", dest, c.GetDstPort(), safeText(strings.ToUpper(c.GetProtocol())))},
+		{"PID", fmt.Sprintf("%d      User: %d", c.GetProcessId(), c.GetUserId())},
+	}
+	if args := c.GetProcessArgs(); len(args) > 0 {
+		// Joined first, then sanitised as one field, so an argument cannot
+		// smuggle a newline in through the join either.
+		rows = append(rows, [2]string{"Command", safeText(strings.Join(args, " "))})
+	}
+	return rows
 }
 
 // promptDetail is the aligned "Field: value" block under the headline. Every

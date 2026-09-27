@@ -73,13 +73,25 @@ func (s *segmented) Value() string {
 	return s.values[s.selected]
 }
 
+// maxSegmentColumns caps how many options share a row.
+//
+// Six duration buttons in a single row asked for 624px, which set the
+// prompt's minimum width on its own and pushed the window past the 620 it is
+// resized to. Wrapping to two rows of three keeps each button a large target
+// without the row dictating the window's width.
+const maxSegmentColumns = 3
+
 func (s *segmented) content() fyne.CanvasObject {
 	objs := make([]fyne.CanvasObject, len(s.buttons))
 	for i, b := range s.buttons {
 		objs[i] = b
 	}
+	cols := len(objs)
+	if cols > maxSegmentColumns {
+		cols = maxSegmentColumns
+	}
 	// Equal widths keep every option the same size target.
-	return container.NewGridWithColumns(len(objs), objs...)
+	return container.NewGridWithColumns(cols, objs...)
 }
 
 // toggle is an independent on/off button, used for the scope options. It shows
@@ -90,8 +102,17 @@ type toggle struct {
 	on     bool
 }
 
+// maxToggleLabel caps the value shown on a scope button.
+//
+// The dest toggle carries whatever hostname the connection used, and a long
+// one made the button demand ~845px. The three toggles share a grid, so all
+// three inherited that and the prompt stretched to 2544px - far wider than
+// the window, leaving a strip of desktop beside it. The untruncated value is
+// still on screen in the detail rows just above, so nothing is lost here.
+const maxToggleLabel = 28
+
 func newToggle(label string, on bool, onChange func()) *toggle {
-	t := &toggle{label: label, on: on}
+	t := &toggle{label: elide(label, maxToggleLabel), on: on}
 	t.button = widget.NewButton(label, func() {
 		t.on = !t.on
 		t.paint()
@@ -115,3 +136,20 @@ func (t *toggle) paint() {
 }
 
 func (t *toggle) On() bool { return t.on }
+
+// elide shortens s to at most max runes, cutting the middle rather than the
+// end: a hostname's leading label and its TLD both say more about what is
+// being allowed than the middle of the string does.
+func elide(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 1 {
+		return "…"
+	}
+	keep := max - 1 // room for the ellipsis
+	head := (keep + 1) / 2
+	tail := keep - head
+	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+}
