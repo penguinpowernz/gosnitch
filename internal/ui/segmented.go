@@ -3,6 +3,7 @@ package ui
 import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -110,17 +111,31 @@ type toggle struct {
 	on     bool
 }
 
-// maxToggleLabel caps the value shown on a scope button.
+// maxToggleWidth caps how wide the value on a scope button may render.
 //
-// The dest toggle carries whatever hostname the connection used, and a long
-// one made the button demand ~845px. The three toggles share a grid, so all
-// three inherited that and the prompt stretched to 2544px - far wider than
-// the window, leaving a strip of desktop beside it. The untruncated value is
-// still on screen in the detail rows just above, so nothing is lost here.
-const maxToggleLabel = 28
+// The dest toggle carries whatever hostname the connection used. The three
+// toggles share a grid, which gives every cell the width of the widest, so
+// one long name set the width of all three and stretched the prompt past its
+// window - the strip of desktop beside it. The untruncated hostname is still
+// on screen in the detail rows just above, so nothing is lost by cutting it
+// down here.
+//
+// The budget is a third of the window, less what the button draws around the
+// text and the padding the grid puts between cells. It is a rendered width
+// rather than a rune count because a count is the wrong unit for a hostname
+// that may be an IDN: twenty wide glyphs render nearly twice as wide as
+// twenty of "sub.". TestScopeRowFitsThePrompt checks the arithmetic against
+// the real widgets.
+const (
+	scopeColumns = 3
+	toggleChrome = 34 // button padding, the tick's spacer, and inner border
+	gridGutters  = 24 // padding the grid puts between and around cells
+
+	maxToggleWidth float32 = (promptWidth-gridGutters)/scopeColumns - toggleChrome
+)
 
 func newToggle(label string, on bool, onChange func()) *toggle {
-	t := &toggle{label: elide(label, maxToggleLabel), on: on}
+	t := &toggle{label: elideToWidth(label, maxToggleWidth), on: on}
 	// No text here: paint sets it, prefixed with the tick or its spacer.
 	t.button = widget.NewButton("", func() {
 		t.on = !t.on
@@ -150,19 +165,29 @@ func (t *toggle) paint() {
 
 func (t *toggle) On() bool { return t.on }
 
-// elide shortens s to at most max runes, cutting the middle rather than the
-// end: a hostname's leading label and its TLD both say more about what is
-// being allowed than the middle of the string does.
-func elide(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
+// elide shortens s until it renders no wider than max, cutting the middle
+// rather than the end: a hostname's leading label and its TLD both say more
+// about what is being allowed than the middle of the string does.
+func elideToWidth(s string, max float32) string {
+	if textWidth(s) <= max {
 		return s
 	}
-	if max <= 1 {
-		return "…"
+	r := []rune(s)
+	// Shrink the kept runes until what is left fits. Each step drops one from
+	// whichever side currently has more, so the cut stays near the middle.
+	for keep := len(r) - 1; keep > 0; keep-- {
+		head := (keep + 1) / 2
+		tail := keep - head
+		candidate := string(r[:head]) + "…" + string(r[len(r)-tail:])
+		if textWidth(candidate) <= max {
+			return candidate
+		}
 	}
-	keep := max - 1 // room for the ellipsis
-	head := (keep + 1) / 2
-	tail := keep - head
-	return string(r[:head]) + "…" + string(r[len(r)-tail:])
+	return "…"
+}
+
+// textWidth is the width a button label renders at. Buttons use the standard
+// text size and an unstyled face.
+func textWidth(s string) float32 {
+	return fyne.MeasureText(s, theme.TextSize(), fyne.TextStyle{}).Width
 }

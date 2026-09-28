@@ -346,19 +346,20 @@ func promptContent(conn *protocol.Connection, p promptParts) fyne.CanvasObject {
 	)
 }
 
-// scopeRow lays the three scope toggles out side by side.
+// scopeRow lays the three scope toggles out side by side, each taking an
+// equal third of the width.
 //
-// GridWithColumns gives every cell the width of the widest, so the dest
-// toggle - the only one carrying a variable-length value - decided the width
-// of all three and, through them, of the window. HBox lets each button take
-// its own width instead, and the dest label is elided, so a long hostname no
-// longer stretches the prompt.
+// GridWithColumns gives every cell the width of the widest, so this only
+// works while no cell can be arbitrarily wide: the dest toggle carries a
+// hostname and is capped at maxToggleWidth for exactly that reason. Without
+// the cap a long name set the width of all three and pushed the prompt past
+// its window.
 func scopeRow(toggles ...*toggle) fyne.CanvasObject {
 	objs := make([]fyne.CanvasObject, len(toggles))
 	for i, t := range toggles {
 		objs[i] = t.button
 	}
-	return container.NewHBox(objs...)
+	return container.NewGridWithColumns(len(objs), objs...)
 }
 
 // detailGrid lays the connection details out as a label column and a value

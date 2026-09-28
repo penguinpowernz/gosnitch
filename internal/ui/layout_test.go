@@ -80,8 +80,8 @@ func TestPromptWidthIsStableAcrossConnections(t *testing.T) {
 func TestScopeToggleLabelIsBounded(t *testing.T) {
 	long := strings.Repeat("sub.", 25) + "example.com"
 	tg := newToggle(long, false, nil)
-	if n := len([]rune(tg.label)); n > maxToggleLabel {
-		t.Errorf("toggle label is %d runes, want at most %d", n, maxToggleLabel)
+	if w := textWidth(tg.label); w > maxToggleWidth {
+		t.Errorf("toggle label renders %.0fpx wide, want at most %.0f", w, maxToggleWidth)
 	}
 	if !strings.Contains(tg.label, "…") {
 		t.Errorf("a truncated label should say so: %q", tg.label)
@@ -92,25 +92,61 @@ func TestScopeToggleLabelIsBounded(t *testing.T) {
 	}
 }
 
-func TestElide(t *testing.T) {
-	// Anything at or under the cap is returned untouched.
-	for _, s := range []string{"", "short", "exactly-10"} {
-		if got := elide(s, 10); got != s {
-			t.Errorf("elide(%q, 10) = %q, want it unchanged", s, got)
+// The three toggles share a grid, which sizes every cell to the widest, so
+// the row has to fit the prompt whatever hostname turns up - including wide
+// glyphs, where a rune count would badly under-estimate the width.
+func TestScopeRowFitsThePrompt(t *testing.T) {
+	hosts := []string{
+		"example.com",
+		"api.anthropic.com",
+		strings.Repeat("sub.", 25) + "example.com",
+		strings.Repeat("W", 120),
+		strings.Repeat("好", 120),
+		strings.Repeat("x", 500),
+	}
+	for _, h := range hosts {
+		row := scopeRow(
+			newToggle(h, false, nil),
+			newToggle("port 65535", false, nil),
+			newToggle("user 1000", false, nil),
+		)
+		if w := row.MinSize().Width; w > promptWidth {
+			t.Errorf("host %.20q...: scope row wants %.0fpx > %dpx window", h, w, promptWidth)
+		}
+	}
+}
+
+func TestElideToWidth(t *testing.T) {
+	// Anything already narrow enough is returned untouched.
+	for _, s := range []string{"", "short", "port 65535"} {
+		if got := elideToWidth(s, maxToggleWidth); got != s {
+			t.Errorf("elideToWidth(%q) = %q, want it unchanged", s, got)
 		}
 	}
 
-	// Anything longer comes back at exactly the cap, cut in the middle so
-	// both ends of a hostname survive.
-	got := elide("aaaaaaaaaabbbbbbbbbbcccccccccc", 12)
-	if n := len([]rune(got)); n != 12 {
-		t.Errorf("elide to 12 gave %d runes: %q", n, got)
+	// Anything wider is cut to fit, from the middle, and marked.
+	long := strings.Repeat("sub.", 25) + "example.com"
+	got := elideToWidth(long, maxToggleWidth)
+	if w := textWidth(got); w > maxToggleWidth {
+		t.Errorf("elided to %.0fpx, over the %.0f cap: %q", w, maxToggleWidth, got)
 	}
-	if !strings.HasPrefix(got, "aaa") || !strings.HasSuffix(got, "ccc") {
-		t.Errorf("elide should keep both ends, got %q", got)
+	if !strings.HasPrefix(got, "sub.") || !strings.HasSuffix(got, ".com") {
+		t.Errorf("should keep both ends, got %q", got)
 	}
 	if !strings.Contains(got, "…") {
-		t.Errorf("elide should mark the cut, got %q", got)
+		t.Errorf("should mark the cut, got %q", got)
+	}
+
+	// Wide glyphs are measured, not counted: the result must still fit.
+	for _, s := range []string{strings.Repeat("好", 60), strings.Repeat("W", 60)} {
+		if w := textWidth(elideToWidth(s, maxToggleWidth)); w > maxToggleWidth {
+			t.Errorf("wide glyphs elided to %.0fpx, over the cap", w)
+		}
+	}
+
+	// A cap too small for even one character still terminates.
+	if got := elideToWidth("abcdef", 1); got != "…" {
+		t.Errorf("tiny cap gave %q", got)
 	}
 }
 
