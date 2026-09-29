@@ -5,49 +5,6 @@ application firewall, as a simpler alternative to the stock Python UI
 (`opensnitch-ui`). It lives in the system tray and shows one plain table of
 connection events.
 
-<img width="634" height="548" alt="image" src="https://github.com/user-attachments/assets/fe07d1ef-5628-4c39-980c-f6f13701e687" />
-
-## How it fits together
-
-OpenSnitch inverts the usual client/server roles: **the UI is the gRPC server**
-and `opensnitchd` connects *out* to it. gosnitch therefore listens on
-`/tmp/osui.sock` (the `Server.Address` in `/etc/opensnitchd/default-config.json`)
-and implements the `protocol.UI` service:
-
-| RPC | What gosnitch does |
-| --- | --- |
-| `Subscribe` | Records that the daemon has attached, and its version. |
-| `Ping` | Heartbeat, once a second. Drives the connected/disconnected status. |
-| `AskRule` | A connection matched no rule. Prompts (or applies the default) and returns the verdict. |
-| `Notifications` | Bidirectional stream. Held open, and used to push `DELETE_RULE` down to the daemon. |
-
-The `.proto` in `proto/ui.proto` was reconstructed from the descriptor shipped
-with `opensnitch-ui` 1.5.8, so it is wire-compatible with that daemon.
-
-### The socket
-
-`/tmp/osui.sock` is in a world-writable directory, and every process running as
-this user can reach it - not only `opensnitchd`. `$XDG_RUNTIME_DIR` would be a
-better home, but the daemon ships `unix:///tmp/osui.sock` in its
-`default-config.json`, so moving it would break the connection unless the
-daemon's config were edited too. gosnitch hardens the path it has to use
-instead:
-
-- The socket is bound under a `0o007` umask, so it is never created wider than
-  `0770`. Binding and then narrowing it with `chmod` leaves a window in which
-  anything can connect, and that window is reachable in practice. The mode is
-  checked after the bind rather than assumed.
-- A stale socket is only removed when we own it. `lstat`, so a planted symlink
-  is not followed, and a non-socket at that path is refused rather than
-  deleted.
-- The gRPC server caps concurrent streams, sets a connection timeout and a
-  keepalive policy, all well clear of what a real daemon needs (one
-  `Notifications` stream plus occasional unary calls). `MaxRecvMsgSize` stays
-  at 32MB because `Statistics` carries unbounded maps.
-- Events are held in a ring buffer, so recording one is constant-time. It used
-  to prepend to a slice, which copied the whole buffer per event - a cost any
-  local process could drive by opening connections.
-
 ## Building
 
 Fyne needs cgo and the usual X11/OpenGL headers:
@@ -104,6 +61,10 @@ The daemon reconnects on its own within a few seconds.
 
 ## Using it
 
+The main window is **a lot** simpler than the Python frontend.
+
+<img width="853" height="511" alt="image" src="https://github.com/user-attachments/assets/6640399f-dfa7-4cfd-aef3-202cf1198fdf" />
+
 Two tabs:
 
 **Events** — live connections, newest first, capped at 1000 rows. **Clear**
@@ -128,25 +89,7 @@ The prompt is built around one idea: a security prompt you answer many times a
 day must be answerable **without careful aiming**. Small checkboxes add friction,
 and friction on a security tool trains you to click through it.
 
-So every control is a full-size button:
-
-```
-  firefox wants to connect to www.mozilla.org
-
-        Path  /usr/lib/firefox/firefox
- Destination  www.mozilla.org (34.107.221.82):443  TCP
-         PID  4821      User: 1000
-
-  For how long
-  [   Once   ][  30 sec  ][  5 min   ]
-  [  1 hour  ][ Until re…][ Forever  ]
-
-  Apply to
-  Always limited to firefox. Narrow it further:
-  [ ✓ www.mozilla.…][   port 443     ][   user 1000    ]
-
-  [   Deny (58)    ][      Allow      ]
-```
+<img width="634" height="548" alt="image" src="https://github.com/user-attachments/assets/fe07d1ef-5628-4c39-980c-f6f13701e687" />
 
 - **Duration** is a single-select row: clicking one deselects the rest. Six
   buttons across set the window's width on their own, so they wrap to two rows
@@ -156,10 +99,6 @@ So every control is a full-size button:
   executable; these narrow it further. A long hostname is elided in the middle
   on the button, which keeps both ends readable; the full value is in the
   detail rows above.
-- **Nothing in the connection can stretch the window.** The details are laid
-  out as label/value rows so only the value column flexes and wraps, and the
-  scope buttons are capped. A window cannot be smaller than its content, so a
-  long command line used to widen the prompt past what it was drawing.
 - The two shapes this is tuned for are *deny forever to a destination* and
   *allow forever, pinned to destination + port + user*.
 
@@ -221,6 +160,48 @@ no ASCII alphanumerics (a CJK-named binary collapses to just its parent
 directory), and only that case earns a short digest suffix. Ordinary paths,
 hostnames and numbers keep the byte-for-byte name the Python UI writes, so
 equivalent rules from either client still collide on purpose.
+
+## The OpenSnitch protocol
+
+OpenSnitch inverts the usual client/server roles: **the UI is the gRPC server**
+and `opensnitchd` connects *out* to it. gosnitch therefore listens on
+`/tmp/osui.sock` (the `Server.Address` in `/etc/opensnitchd/default-config.json`)
+and implements the `protocol.UI` service:
+
+| RPC | What gosnitch does |
+| --- | --- |
+| `Subscribe` | Records that the daemon has attached, and its version. |
+| `Ping` | Heartbeat, once a second. Drives the connected/disconnected status. |
+| `AskRule` | A connection matched no rule. Prompts (or applies the default) and returns the verdict. |
+| `Notifications` | Bidirectional stream. Held open, and used to push `DELETE_RULE` down to the daemon. |
+
+The `.proto` in `proto/ui.proto` was reconstructed from the descriptor shipped
+with `opensnitch-ui` 1.5.8, so it is wire-compatible with that daemon.
+
+### The socket
+
+`/tmp/osui.sock` is in a world-writable directory, and every process running as
+this user can reach it - not only `opensnitchd`. `$XDG_RUNTIME_DIR` would be a
+better home, but the daemon ships `unix:///tmp/osui.sock` in its
+`default-config.json`, so moving it would break the connection unless the
+daemon's config were edited too. gosnitch hardens the path it has to use
+instead:
+
+- The socket is bound under a `0o007` umask, so it is never created wider than
+  `0770`. Binding and then narrowing it with `chmod` leaves a window in which
+  anything can connect, and that window is reachable in practice. The mode is
+  checked after the bind rather than assumed.
+- A stale socket is only removed when we own it. `lstat`, so a planted symlink
+  is not followed, and a non-socket at that path is refused rather than
+  deleted.
+- The gRPC server caps concurrent streams, sets a connection timeout and a
+  keepalive policy, all well clear of what a real daemon needs (one
+  `Notifications` stream plus occasional unary calls). `MaxRecvMsgSize` stays
+  at 32MB because `Statistics` carries unbounded maps.
+- Events are held in a ring buffer, so recording one is constant-time. It used
+  to prepend to a slice, which copied the whole buffer per event - a cost any
+  local process could drive by opening connections.
+
 
 ## Development
 
