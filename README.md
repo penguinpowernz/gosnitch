@@ -7,12 +7,22 @@ connection events.
 
 ## Building
 
-Fyne needs cgo and the usual X11/OpenGL headers:
+Fyne is a cgo library that binds OpenGL and X11 directly, so a plain `go build`
+is not enough: it needs a C toolchain and the X11/OpenGL development headers
+present at compile time. On a Debian-based system:
 
 ```sh
-sudo apt install golang gcc libgl1-mesa-dev xorg-dev
+sudo apt install libgl1-mesa-dev xorg-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
+```
+
+Then build with cgo enabled:
+
+```sh
 CGO_ENABLED=1 go build -o gosnitch ./cmd/gosnitch
 ```
+
+The `Makefile` sets and exports `CGO_ENABLED=1` itself, so `make build` works
+without the prefix.
 
 ## Packaging
 
