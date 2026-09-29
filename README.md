@@ -22,6 +22,30 @@ and implements the `protocol.UI` service:
 The `.proto` in `proto/ui.proto` was reconstructed from the descriptor shipped
 with `opensnitch-ui` 1.5.8, so it is wire-compatible with that daemon.
 
+### The socket
+
+`/tmp/osui.sock` is in a world-writable directory, and every process running as
+this user can reach it - not only `opensnitchd`. `$XDG_RUNTIME_DIR` would be a
+better home, but the daemon ships `unix:///tmp/osui.sock` in its
+`default-config.json`, so moving it would break the connection unless the
+daemon's config were edited too. gosnitch hardens the path it has to use
+instead:
+
+- The socket is bound under a `0o007` umask, so it is never created wider than
+  `0770`. Binding and then narrowing it with `chmod` leaves a window in which
+  anything can connect, and that window is reachable in practice. The mode is
+  checked after the bind rather than assumed.
+- A stale socket is only removed when we own it. `lstat`, so a planted symlink
+  is not followed, and a non-socket at that path is refused rather than
+  deleted.
+- The gRPC server caps concurrent streams, sets a connection timeout and a
+  keepalive policy, all well clear of what a real daemon needs (one
+  `Notifications` stream plus occasional unary calls). `MaxRecvMsgSize` stays
+  at 32MB because `Statistics` carries unbounded maps.
+- Events are held in a ring buffer, so recording one is constant-time. It used
+  to prepend to a slice, which copied the whole buffer per event - a cost any
+  local process could drive by opening connections.
+
 ## Building
 
 Fyne needs cgo and the usual X11/OpenGL headers:
@@ -72,6 +96,7 @@ The daemon reconnects on its own within a few seconds.
 | `-interactive` | `true` | Prompt on unmatched connections. `false` records silently and applies the default. |
 | `-default-action` | `allow` | `allow`, `deny` or `reject` when a prompt goes unanswered. Only seeds the initial value; the tray changes it afterwards (allow and deny only). |
 | `-hidden` | `false` | Start minimised to the tray. |
+| `-version` | | Print the version and exit. |
 
 `GOSNITCH_ADDRESS` overrides the default address.
 
@@ -84,7 +109,9 @@ empties it.
 
 **Rules** — every rule in the rules directory, newest first by `created`.
 Select one and press **Delete rule**; gosnitch confirms first, because
-deletion cannot be undone.
+deletion cannot be undone. A rule file that cannot be parsed is counted next
+to the total (`267 rules — 1 rule unreadable`) and logged, since a rule the
+daemon is still enforcing should not just be missing from the list.
 
 - **Tray icon** → *Show events*, *Manage rules*, *Default action*, *Quit*.
 - **Default action** picks what an unanswered prompt does: *Allow* or *Deny*.
@@ -104,20 +131,33 @@ So every control is a full-size button:
 ```
   firefox wants to connect to www.mozilla.org
 
+        Path  /usr/lib/firefox/firefox
+ Destination  www.mozilla.org (34.107.221.82):443  TCP
+         PID  4821      User: 1000
+
   For how long
-  [ Once ][ 30 sec ][ 5 min ][ 1 hour ][ Until reboot ][ Forever ]
+  [   Once   ][  30 sec  ][  5 min   ]
+  [  1 hour  ][ Until re…][ Forever  ]
 
   Apply to
   Always limited to firefox. Narrow it further:
-  [ ✓ www.mozilla.org ][   port 443 ][   user 1000 ]
+  [ ✓ www.mozilla.…][   port 443     ][   user 1000    ]
 
   [   Deny (58)    ][      Allow      ]
 ```
 
-- **Duration** is a single-select row: clicking one deselects the rest.
+- **Duration** is a single-select row: clicking one deselects the rest. Six
+  buttons across set the window's width on their own, so they wrap to two rows
+  of three.
 - **Scope** toggles are independent, and each shows the value it pins to, so
   you can see what you are enabling. The rule is always limited to the
-  executable; these narrow it further.
+  executable; these narrow it further. A long hostname is elided in the middle
+  on the button, which keeps both ends readable; the full value is in the
+  detail rows above.
+- **Nothing in the connection can stretch the window.** The details are laid
+  out as label/value rows so only the value column flexes and wraps, and the
+  scope buttons are capped. A window cannot be smaller than its content, so a
+  long command line used to widen the prompt past what it was drawing.
 - The two shapes this is tuned for are *deny forever to a destination* and
   *allow forever, pinned to destination + port + user*.
 
@@ -136,6 +176,19 @@ plain. Change which one that is from the tray.
 scope toggle proves you are there and deciding, so the counter disappears and
 the prompt waits for a deliberate Allow or Deny - however long you take. The
 timeout exists for prompts nobody is looking at, not to race someone who is.
+
+**One prompt at a time.** A burst of unmatched connections would otherwise
+open a stacked window per connection, each with its own countdown, which is
+not something anyone can answer. Prompts queue instead, and past 8 waiting the
+rest are declined immediately so the daemon applies the default action -
+shedding is the safer failure, since the default is what an unanswered prompt
+applies anyway.
+
+Every value shown in the prompt comes from the process being judged, so each
+is sanitised before it reaches a label: control characters and bidi overrides
+become U+FFFD. Without that a newline in a hostname could forge the lines
+below it and attribute the connection to a different binary. It is
+display-only, so the operands written into a rule are unchanged.
 
 Two things are deliberately **not** configurable:
 
@@ -160,7 +213,12 @@ rule, exactly as the Python UI does, and `opensnitchd` removes the file. So:
 
 Rules are named with the same slug scheme the Python UI uses
 (`allow-once-simple-usr-bin-curl`), so both clients produce consistent entries
-in `/etc/opensnitchd/rules`.
+in `/etc/opensnitchd/rules`. The daemon keys rules by name, so a name has to
+say which value it came from: slugifying leaves nothing behind for a value with
+no ASCII alphanumerics (a CJK-named binary collapses to just its parent
+directory), and only that case earns a short digest suffix. Ordinary paths,
+hostnames and numbers keep the byte-for-byte name the Python UI writes, so
+equivalent rules from either client still collide on purpose.
 
 ## Development
 
@@ -172,7 +230,8 @@ go run ./cmd/rulesdump -n 20
 ```
 
 `cmd/mockdaemon` impersonates `opensnitchd` so the UI can be driven without
-root:
+root. `make run-dev` builds both and points them at a throwaway socket, or by
+hand:
 
 ```sh
 CGO_ENABLED=1 go build -o gosnitch ./cmd/gosnitch
@@ -181,6 +240,18 @@ go build -o mockdaemon ./cmd/mockdaemon
 ./gosnitch -address unix:///tmp/gosnitch-test.sock &
 ./mockdaemon -address unix:///tmp/gosnitch-test.sock -every 1s
 ```
+
+```sh
+make test    # go test -race ./...
+make vet
+```
+
+Much of what the tests cover is behaviour that fails silently if it regresses,
+so they are worth reading before changing that code: that an idle
+`Notifications` stream survives the connection-idle timeout, that the socket is
+never created world-reachable, that ring-buffer ordering holds when wrapped,
+that the prompt's content fits inside its window, and that rule names still
+match a real `/etc/opensnitchd/rules`.
 
 Regenerating the protobuf bindings needs `protoc` plus `protoc-gen-go` and
 `protoc-gen-go-grpc`:
