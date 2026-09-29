@@ -5,6 +5,8 @@ application firewall, as a simpler alternative to the stock Python UI
 (`opensnitch-ui`). It lives in the system tray and shows one plain table of
 connection events.
 
+<img width="643" height="550" alt="image" src="https://github.com/user-attachments/assets/0ba6a897-2889-4fbf-b238-6bc4cc01ed99" />
+
 ## How it fits together
 
 OpenSnitch inverts the usual client/server roles: **the UI is the gRPC server**
