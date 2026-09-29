@@ -5,7 +5,7 @@ application firewall, as a simpler alternative to the stock Python UI
 (`opensnitch-ui`). It lives in the system tray and shows one plain table of
 connection events.
 
-<img width="643" height="550" alt="image" src="https://github.com/user-attachments/assets/0ba6a897-2889-4fbf-b238-6bc4cc01ed99" />
+<img width="634" height="548" alt="image" src="https://github.com/user-attachments/assets/fe07d1ef-5628-4c39-980c-f6f13701e687" />
 
 ## How it fits together
 
