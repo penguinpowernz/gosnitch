@@ -1,12 +1,12 @@
 Package: gosnitch
-Version: 0.1.0
+Version: 0.2.0
 Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: Robert McLeod <robert@penguinpower.co.nz>
 Essential: no
 Homepage: https://github.com/penguinpowernz/gosnitch
-Installed-Size: 37475
+Installed-Size: 37505
 Depends: libc6, libgl1, libx11-6, libxcb1, libwayland-client0, libffi8
 Conflicts: opensnitch-ui
 Description: Fyne system tray UI for the OpenSnitch application firewall
