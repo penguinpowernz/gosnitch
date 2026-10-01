@@ -41,6 +41,7 @@ type Server struct {
 	protocol.UnimplementedUIServer
 
 	store   *Store
+	temp    *TempStore
 	prompt  Prompter
 	defAct  string
 	defDur  string
@@ -82,6 +83,14 @@ func (s *Server) SetDefaults(action, duration string) {
 	if duration != "" {
 		s.defDur = duration
 	}
+	s.mu.Unlock()
+}
+
+// SetTempStore installs the list of temporary rules to record into. Optional:
+// without one, temporary rules are applied exactly as before, just not listed.
+func (s *Server) SetTempStore(t *TempStore) {
+	s.mu.Lock()
+	s.temp = t
 	s.mu.Unlock()
 }
 
@@ -147,6 +156,17 @@ func (s *Server) Ping(ctx context.Context, req *protocol.PingRequest) (*protocol
 func (s *Server) Subscribe(ctx context.Context, cfg *protocol.ClientConfig) (*protocol.ClientConfig, error) {
 	s.markSeen(cfg.GetVersion())
 	log.Printf("daemon subscribed: name=%s version=%s", cfg.GetName(), cfg.GetVersion())
+
+	// A daemon subscribing has just built its rule loader from disk, so any
+	// "until restart" rule we recorded is gone with the previous run. Nothing
+	// tells us that otherwise - the duration has no expiry we can compute.
+	s.mu.RLock()
+	temp := s.temp
+	s.mu.RUnlock()
+	if temp != nil {
+		temp.DropUntilRestart()
+	}
+
 	return cfg, nil
 }
 
@@ -167,9 +187,22 @@ func (s *Server) AskRule(ctx context.Context, conn *protocol.Connection) (*proto
 		}
 	}
 
-	s.store.Add(EntryFromConn(conn, d.Action, time.Now()))
+	now := time.Now()
+	s.store.Add(EntryFromConn(conn, d.Action, now))
 
-	return BuildRule(conn, d), nil
+	rule := BuildRule(conn, d)
+
+	// Temporary rules never reach the rules directory, so this is the only
+	// chance to record one: the daemon holds it in memory and expires it on
+	// its own timer, and exposes no way to ask what it is holding.
+	s.mu.RLock()
+	temp := s.temp
+	s.mu.RUnlock()
+	if temp != nil {
+		temp.Record(rule, d, now)
+	}
+
+	return rule, nil
 }
 
 // notifyStream is the live Notifications stream to the daemon, plus the

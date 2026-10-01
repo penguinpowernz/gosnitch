@@ -41,10 +41,12 @@ type App struct {
 	win       fyne.Window
 	table     *tableView
 	rules     *rulesView
+	temp      *tempRulesView
 	tabs      *container.AppTabs
 	srv       *daemon.Server
 	store     *daemon.Store
 	ruleStore *daemon.RuleStore
+	tempStore *daemon.TempStore
 
 	defaultAction string
 	promptTimeout time.Duration
@@ -83,8 +85,11 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 	srv.SetDefaults(a.defaultAction, FallbackDuration)
 
 	a.ruleStore = daemon.NewRuleStore(opts.RulesPath)
+	a.tempStore = daemon.NewTempStore(0)
+	srv.SetTempStore(a.tempStore)
 	a.table = newTableView(store)
 	a.rules = newRulesView(a, a.ruleStore)
+	a.temp = newTempRulesView(a, a.tempStore)
 	a.buildWindow(opts.StartHidden)
 	a.buildTray()
 
@@ -95,6 +100,8 @@ func New(store *daemon.Store, srv *daemon.Server, opts Options) *App {
 	// Both callbacks arrive on gRPC goroutines; hop to the UI thread.
 	store.OnEvent(func() { fyne.Do(a.table.refresh) })
 	srv.OnStatus(func() { fyne.Do(a.updateStatus) })
+	// Recorded on a gRPC goroutine, same as events.
+	a.tempStore.OnChange(func() { fyne.Do(a.temp.refresh) })
 
 	a.updateStatus()
 
@@ -114,6 +121,7 @@ func (a *App) buildWindow(startHidden bool) {
 	a.tabs = container.NewAppTabs(
 		container.NewTabItem("Events", a.table.content()),
 		container.NewTabItem("Rules", a.rules.content()),
+		container.NewTabItem("Temporary", a.temp.content()),
 	)
 	a.win.SetContent(a.tabs)
 
@@ -195,6 +203,7 @@ func (a *App) buildTray() {
 	menu := fyne.NewMenu("gosnitch",
 		fyne.NewMenuItem("Show events", func() { a.showTab(0) }),
 		fyne.NewMenuItem("Manage rules", func() { a.showTab(1) }),
+		fyne.NewMenuItem("Temporary rules", func() { a.showTab(2) }),
 		fyne.NewMenuItemSeparator(),
 		defaults,
 		fyne.NewMenuItemSeparator(),
@@ -231,4 +240,7 @@ func (a *App) updateStatus() {
 }
 
 // Run blocks until the user quits.
-func (a *App) Run() { a.fyne.Run() }
+func (a *App) Run() {
+	a.temp.startTicker()
+	a.fyne.Run()
+}

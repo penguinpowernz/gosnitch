@@ -75,7 +75,7 @@ The main window is **a lot** simpler than the Python frontend.
 
 <img width="853" height="511" alt="image" src="https://github.com/user-attachments/assets/6640399f-dfa7-4cfd-aef3-202cf1198fdf" />
 
-Two tabs:
+Three tabs:
 
 **Events** — live connections, newest first, capped at 1000 rows. **Clear**
 empties it.
@@ -86,7 +86,43 @@ deletion cannot be undone. A rule file that cannot be parsed is counted next
 to the total (`267 rules — 1 rule unreadable`) and logged, since a rule the
 daemon is still enforcing should not just be missing from the list.
 
-- **Tray icon** → *Show events*, *Manage rules*, *Default action*, *Quit*.
+**Temporary** — rules the daemon is holding in memory, soonest to expire first,
+with a live countdown in the **Expires** column. Select one and press **Delete
+rule**, the same round trip the Rules tab makes.
+
+Temporary rules never appear in the Rules tab, because `opensnitchd` never
+writes them to the rules directory: it keeps them in its own rule loader and
+drops them on a timer (it logs `Temporary rule expired`). Every file in
+`/etc/opensnitchd/rules` is therefore `"duration": "always"`.
+
+The UI service exposes no way to ask the daemon what it is holding — there is
+no equivalent of the loader's `GetAll`, and `Statistics` carries only a rule
+count. So this tab lists what **this** gosnitch answered, recorded on the way
+out of `AskRule`, which has two consequences worth knowing:
+
+- Rules created by another client, or by a previous gosnitch run, are not
+  listed. The daemon is still enforcing them; gosnitch just never saw them.
+- The daemon's own timer is the authority on expiry. The list mirrors it rather
+  than driving it, dropping an entry once it is due so the tab cannot offer a
+  Delete for a rule the daemon has already forgotten.
+
+Re-answering a prompt whose temporary rule is still live does not refresh the
+row. The daemon does not replace such a rule either: `setUniqueName` renames
+the incoming one to `<name>-2`, so the original keeps running and the duplicate
+is a rule gosnitch never named. The tab keeps showing the rule it can still
+delete, and ignores the duplicate the same way it ignores any rule it did not
+create. (`Loader.Delete` returns nil for a name it does not hold, so a delete
+aimed at the wrong name would be answered `OK` having done nothing — worth
+knowing if you extend this.)
+
+`once` rules are not listed: the daemon spends one on the connection that
+created it, so it is gone before it could be shown. `until restart` rules have
+no countdown to show — the daemon drops them whenever it next starts, which the
+UI cannot predict — so they read `on restart` and are cleared when a daemon
+subscribes, since that means its loader was rebuilt from disk.
+
+- **Tray icon** → *Show events*, *Manage rules*, *Temporary rules*,
+  *Default action*, *Quit*.
 - **Default action** picks what an unanswered prompt does: *Allow* or *Deny*.
   The choice is remembered across restarts, and the countdown moves to that
   button. `reject` is accepted from `-default-action` but is not offered in
@@ -265,3 +301,6 @@ protoc --go_out=. --go_opt=module=github.com/penguinpowernz/gosnitch \
   command line, network ranges, regex matches) that gosnitch does not author,
   though it displays them correctly.
 - No rule history: events are kept in memory only and lost on exit.
+- The Temporary tab can only show temporary rules this gosnitch created, since
+  the daemon offers no way to read the ones it is holding. See the tab's notes
+  above.
